@@ -984,32 +984,56 @@ static int irdma_create_ah_wait(struct irdma_pci_f *rf,
 		}
 #else /* HAVE_POLL_TIMEOUT_US_ATOMIC */
 #define AH_SPIN_WARN_PERIOD   msecs_to_jiffies(5000)
+		bool timeout = false;
 		u64 start = get_jiffies_64();
 		u64 warn_start = start;
-		int cnt = rf->sc_dev.hw_attrs.max_cqp_compl_wait_time_ms *
-			  CQP_TIMEOUT_THRESHOLD;
+		u64 completed_ops = atomic64_read(&rf->sc_dev.cqp->completed_ops);
+		const u64 timeout_jiffies =
+			msecs_to_jiffies(rf->sc_dev.hw_attrs.max_cqp_compl_wait_time_ms *
+					 CQP_TIMEOUT_THRESHOLD);
 
-		do {
+		/* NOTE: irdma_check_cqp_progress is not used here because it relies on
+		 *       a notion of a cycle count, but we want to avoid unnecessary delays.
+		 *       We are in an atomic context here, so we might as well check in
+		 *       a tight loop.
+		 */
+		while (!atomic_read(&cqp_request->request_done)) {
+			u64 tmp;
 			u64 curr_jiffies;
 
 			irdma_cqp_ce_handler(rf, &rf->ccq.sc_cq);
-			mdelay(1);
+
 			curr_jiffies = get_jiffies_64();
+			tmp = atomic64_read(&rf->sc_dev.cqp->completed_ops);
+			if (tmp != completed_ops) {
+				/* CQP is progressing. Reset timer. */
+				completed_ops = tmp;
+				start = curr_jiffies;
+			}
+
+			if ((curr_jiffies - start) > timeout_jiffies) {
+				timeout = true;
+				break;
+			}
+
 			if ((curr_jiffies - warn_start) > AH_SPIN_WARN_PERIOD) {
 				printk(KERN_ERR "Waiting for create AH CQP OP for "
 						"more than 5 seconds (start = %llu, now = %llu, %u total milliseconds)\n",
 				       start, curr_jiffies, jiffies_to_msecs(curr_jiffies - start));
 				warn_start = curr_jiffies;
 			}
-		} while (!atomic_read(&cqp_request->request_done) && --cnt);
+		}
 
-		if (!cnt || cqp_request->compl_info.op_ret_val) {
-			err = !cnt ? -ETIMEDOUT : -EINVAL;
+		if (!timeout && !cqp_request->compl_info.op_ret_val) {
+			irdma_put_cqp_request(&rf->cqp, cqp_request);
+			atomic_set(&sc_ah->ah_info.ah_valid, true);
+		} else {
+			err = timeout ? -ETIMEDOUT : -EINVAL;
 			ibdev_err(&rf->iwdev->ibdev,
 				  "CQP create AH error err = %d opt_ret_val = %d",
 				  err, cqp_request->compl_info.op_ret_val);
 			irdma_put_cqp_request(&rf->cqp, cqp_request);
-			if (!cnt && !rf->reset) {
+			if (timeout && !rf->reset) {
 				rf->reset = true;
 				rf->gen_ops.request_reset(rf);
 			}
