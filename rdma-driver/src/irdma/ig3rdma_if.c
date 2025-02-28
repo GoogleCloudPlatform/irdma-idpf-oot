@@ -209,7 +209,11 @@ static void irdma_poll_cq3(struct irdma_pci_f *rf)
 	__le64 *cqe;
 	u8 polarity;
 
-	cqe = IRDMA_GET_CURRENT_CQ_ELEM(ukcq);
+	if (ukcq->avoid_mem_cflct)
+		cqe = IRDMA_GET_CURRENT_EXTENDED_CQ_ELEM(ukcq);
+	else
+		cqe = IRDMA_GET_CURRENT_CQ_ELEM(ukcq);
+
 	get_64bit_val(cqe, 24, &qword3);
 	polarity = (u8)FIELD_GET(IRDMA_CQ_VALID, qword3);
 
@@ -226,6 +230,8 @@ static int poll_thread(void *context)
 	u32 sleep_micros = LOW_FREQ_MICROS;
 
 	msleep(200);
+
+	rf->sc_dev.last_cqp_poll_ts = ktime_get_ns();
 	do {
 		usleep_range(sleep_micros, sleep_micros + HIGH_FREQ_MICROS);
 		if (rf->sc_dev.hw_wa & AEQ_POLL) {
@@ -234,6 +240,12 @@ static int poll_thread(void *context)
 		}
 		if (rf->sc_dev.hw_wa & CCQ_CQ3_POLL) {
 			struct irdma_sc_cq *ccq = &rf->ccq.sc_cq;
+
+			const u64 tmp = ktime_get_ns();
+			const u64 dur = tmp - rf->sc_dev.last_cqp_poll_ts;
+			if (dur > rf->sc_dev.peak_cqp_poll_interval)
+				rf->sc_dev.peak_cqp_poll_interval = dur;
+			rf->sc_dev.last_cqp_poll_ts = tmp;
 
 			if (ccq)
 				irdma_cqp_ce_handler(rf, ccq);

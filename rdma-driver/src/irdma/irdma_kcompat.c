@@ -981,12 +981,24 @@ static int irdma_create_ah_wait(struct irdma_pci_f *rf,
 			return err;
 		}
 #else /* HAVE_POLL_TIMEOUT_US_ATOMIC */
+#define AH_SPIN_WARN_PERIOD   msecs_to_jiffies(5000)
+		u64 start = get_jiffies_64();
+		u64 warn_start = start;
 		int cnt = rf->sc_dev.hw_attrs.max_cqp_compl_wait_time_ms *
 			  CQP_TIMEOUT_THRESHOLD;
 
 		do {
+			u64 curr_jiffies;
+
 			irdma_cqp_ce_handler(rf, &rf->ccq.sc_cq);
 			mdelay(1);
+			curr_jiffies = get_jiffies_64();
+			if ((curr_jiffies - warn_start) > AH_SPIN_WARN_PERIOD) {
+				printk(KERN_ERR "Waiting for create AH CQP OP for "
+						"more than 5 seconds (start = %llu, now = %llu, %u total milliseconds)\n",
+				       start, curr_jiffies, jiffies_to_msecs(curr_jiffies - start));
+				warn_start = curr_jiffies;
+			}
 		} while (!atomic_read(&cqp_request->request_done) && --cnt);
 
 		if (!cnt || cqp_request->compl_info.op_ret_val) {
