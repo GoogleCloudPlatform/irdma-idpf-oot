@@ -7353,8 +7353,13 @@ int irdma_process_cqp_cmd(struct irdma_sc_dev *dev,
 	spin_lock_irqsave(&dev->cqp_lock, flags);
 	if (list_empty(&dev->cqp_cmd_head) && !irdma_cqp_ring_full(dev->cqp))
 		status = irdma_exec_cqp_cmd(dev, pcmdinfo);
-	else
+	else {
+		dev->cqp_cmds_backlogged++;
+		dev->cqp_backlog_curr++;
+		if (dev->cqp_backlog_curr > dev->cqp_backlog_peak)
+			dev->cqp_backlog_peak = dev->cqp_backlog_curr;
 		list_add_tail(&pcmdinfo->cqp_cmd_entry, &dev->cqp_cmd_head);
+	}
 	pcmdinfo->cqp_cmd_exec_status = status;
 	spin_unlock_irqrestore(&dev->cqp_lock, flags);
 	return status;

@@ -945,9 +945,12 @@ static int irdma_create_ah_wait(struct irdma_pci_f *rf,
 {
 	int ret;
 
+#define AH_SPIN_WARN_PERIOD   msecs_to_jiffies(5000)
+
 	if (!sleep) {
 		bool timeout = false;
 		u64 start = get_jiffies_64();
+		u64 warn_start = start;
 		u64 completed_ops = atomic64_read(&rf->sc_dev.cqp->completed_ops);
 		struct irdma_cqp_request *cqp_request =
 			sc_ah->ah_info.cqp_request;
@@ -977,6 +980,13 @@ static int irdma_create_ah_wait(struct irdma_pci_f *rf,
 			if ((curr_jiffies - start) > timeout_jiffies) {
 				timeout = true;
 				break;
+			}
+
+			if ((curr_jiffies - warn_start) > AH_SPIN_WARN_PERIOD) {
+				printk(KERN_ERR "Waiting for create AH CQP OP for "
+						"more than 5 seconds (start = %llu, now = %llu, %u total milliseconds)\n",
+				       start, curr_jiffies, jiffies_to_msecs(curr_jiffies - start));
+				warn_start = curr_jiffies;
 			}
 		}
 

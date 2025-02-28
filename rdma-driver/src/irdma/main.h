@@ -198,6 +198,7 @@ struct irdma_cqp_request {
 	bool waiting:1;
 	bool dynamic:1;
 	bool pending:1;
+	u64 submission_ts;
 };
 
 struct irdma_cqp {

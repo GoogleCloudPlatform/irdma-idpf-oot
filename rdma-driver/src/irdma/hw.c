@@ -158,6 +158,13 @@ static void irdma_set_flush_fields(struct irdma_sc_qp *qp,
 static void irdma_complete_cqp_request(struct irdma_cqp *cqp,
 				       struct irdma_cqp_request *cqp_request)
 {
+	struct irdma_sc_dev* dev = cqp->sc_cqp.dev;
+	const u64 duration = ktime_get_ns() - cqp_request->submission_ts;
+
+	if (duration > 2000000000) dev->cqp_cmds_latency_2s++;
+	if (duration > dev->cqp_cmd_peak_latency[cqp_request->info.cqp_cmd])
+		dev->cqp_cmd_peak_latency[cqp_request->info.cqp_cmd] = duration;
+
 	atomic_set(&cqp_request->request_done, true);
 	if (cqp_request->waiting)
 		wake_up(&cqp_request->waitq);
