@@ -522,7 +522,7 @@ static void dump_qp(struct irdma_pci_f *rf, u32 qp_id, u32 subtype)
 	struct irdma_qp *iwqp = NULL;
 
 	if (subtype != QP_CHIP_RAW) {
-		if ((qp_id >= 2) && (qp_id < rf->max_qp))
+		if (qp_id < rf->max_qp)
 			iwqp = rf->qp_table[qp_id];
 
 		if (!iwqp) {
@@ -589,9 +589,6 @@ static void dump_qp_cmd(struct irdma_pci_f *rf, char *cbuf)
 			rc = kstrtoul(qpstr, 10, (long *)&qp_id);
 			if (rc)
 				return;
-
-			if ((qp_id == 0) || (qp_id == 1))
-				qp_id = -1;
 		}
 
 		if (sscanf(cbuf + offset, "%8s", stype) == 1) {
