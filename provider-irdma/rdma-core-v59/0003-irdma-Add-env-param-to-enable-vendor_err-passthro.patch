@@ -1,0 +1,143 @@
+From 7e4ec1afe6c2db4f5c561512eb9c161df59a54f9 Mon Sep 17 00:00:00 2001
+From: Jacob Moroni <jmoroni@google.com>
+Date: Mon, 23 Jun 2025 19:52:18 +0000
+Subject: [PATCH 1/1] irdma: Add env param to enable vendor_err passthrough
+ for CIEs
+
+Added a new environment variable that can be used to
+control whether the vendor_err field for completions
+is passed through when CIEs are masked. This is mostly
+useful for applications that wish to more quickly
+react to UD TX drop notifications.
+
+This param is disabled by default to preserve existing
+behavior, but can be enabled via IRDMA_PASS_CIE_VENDOR_ERR=1
+
+If set, then the vendor_err field in struct ibv_wc will
+contain 0xe210000b when a UD TX drop is detected, even
+though the status field indicates success.
+
+Signed-off-by: Jacob Moroni <jmoroni@google.com>
+---
+ providers/irdma/uk.c     | 12 ++++++++++--
+ providers/irdma/umain.c  | 16 ++++++++++++++++
+ providers/irdma/user.h   | 11 +++++++++++
+ providers/irdma/uverbs.c |  4 +++-
+ 4 files changed, 40 insertions(+), 3 deletions(-)
+
+diff --git a/providers/irdma/uk.c b/providers/irdma/uk.c
+index 8ffaacd33..894e905bd 100644
+--- a/providers/irdma/uk.c
++++ b/providers/irdma/uk.c
+@@ -1433,6 +1433,8 @@ int irdma_uk_cq_poll_cmpl(struct irdma_cq_uk *cq,
+ 		ret_code = EFAULT;
+ 		goto exit;
+ 	}
++	info->major_err = 0;
++	info->minor_err = 0;
+ 	if (info->error) {
+ 		info->major_err = FIELD_GET(IRDMA_CQ_MAJERR, qword3);
+ 		info->minor_err = FIELD_GET(IRDMA_CQ_MINERR, qword3);
+@@ -1458,8 +1460,14 @@ int irdma_uk_cq_poll_cmpl(struct irdma_cq_uk *cq,
+ 			    && FIELD_GET(IRDMA_CQMAJERR_HIGH_NIBBLE, info->major_err)
+ 			    == IRDMA_CIE_SIGNATURE) {
+ 				info->error = 0;
+-				info->major_err = 0;
+-				info->minor_err = 0;
++				if (!env.pass_cie_vendor_err) {
++					/* The user can choose to pass the
++					 * vendor_err field through when CIEs
++					 * are masked.
++					 */
++					info->major_err = 0;
++					info->minor_err = 0;
++				}
+ 				info->comp_status = IRDMA_COMPL_STATUS_SUCCESS;
+ 			} else {
+ 				info->comp_status = IRDMA_COMPL_STATUS_UNKNOWN;
+diff --git a/providers/irdma/umain.c b/providers/irdma/umain.c
+index 058d642d1..c90954466 100644
+--- a/providers/irdma/umain.c
++++ b/providers/irdma/umain.c
+@@ -22,6 +22,10 @@
+ #include "umain.h"
+ #include "abi.h"
+ 
++struct irdma_env_params env = {
++	.pass_cie_vendor_err = false,
++};
++
+ unsigned int irdma_dbg;
+ static pthread_t dbg_thread;
+ static pthread_cond_t cond_sigusr1_rcvd;
+@@ -345,11 +349,23 @@ static struct verbs_device *irdma_device_alloc(struct verbs_sysfs_dev *sysfs_dev
+ {
+ 	struct irdma_udevice *dev;
+ 	char *env_val;
++	int tmp;
+ 
+ 	dev = calloc(1, sizeof(*dev));
+ 	if (!dev)
+ 		return NULL;
+ 
++	env_val = getenv("IRDMA_PASS_CIE_VENDOR_ERR");
++	if (env_val) {
++		tmp = atoi(env_val);
++		if (tmp == 0 || tmp == 1)
++			env.pass_cie_vendor_err = tmp;
++		else
++			fprintf(stderr,
++				"%s: Invalid value (%d) for "
++				"IRDMA_PASS_CIE_VENDOR_ERR\n", __func__, tmp);
++	}
++
+ 	env_val = getenv("IRDMA_DEBUG");
+ 	if (env_val)
+ 		irdma_dbg = atoi(env_val);
+diff --git a/providers/irdma/user.h b/providers/irdma/user.h
+index 066d0da15..b37c9192a 100644
+--- a/providers/irdma/user.h
++++ b/providers/irdma/user.h
+@@ -5,6 +5,17 @@
+ 
+ #include "osdep.h"
+ 
++struct irdma_env_params {
++	/* For CIEs which would normally be masked (i.e., UD TX drops), this
++	 * flag will allow the vendor error to be passed through to the ibv_wc.
++	 * This may be useful for applications that wish to directly react to
++	 * explicit TX drop notifications.
++	 */
++	bool pass_cie_vendor_err;
++};
++
++extern struct irdma_env_params env;
++
+ #define irdma_handle void *
+ #define irdma_adapter_handle irdma_handle
+ #define irdma_qp_handle irdma_handle
+diff --git a/providers/irdma/uverbs.c b/providers/irdma/uverbs.c
+index 65b512a81..be23f7c40 100644
+--- a/providers/irdma/uverbs.c
++++ b/providers/irdma/uverbs.c
+@@ -1069,6 +1069,8 @@ static void irdma_process_cqe(struct ibv_wc *entry, struct irdma_cq_poll_info *c
+ 		entry->status = IBV_WC_SUCCESS;
+ 	}
+ 
++	entry->vendor_err = cur_cqe->major_err << 16 | cur_cqe->minor_err;
++
+ 	if (cur_cqe->imm_valid) {
+ 		entry->imm_data = htonl(cur_cqe->imm_data);
+ 		entry->wc_flags |= IBV_WC_WITH_IMM;
+@@ -1361,7 +1363,7 @@ static uint32_t irdma_wc_read_vendor_err(struct ibv_cq_ex *ibvcq_ex)
+ 	iwucq = container_of(ibvcq_ex, struct irdma_ucq, verbs_cq.cq_ex);
+ 	cur_cqe = &iwucq->cur_cqe;
+ 
+-	return cur_cqe->error ? cur_cqe->major_err << 16 | cur_cqe->minor_err : 0;
++	return cur_cqe->major_err << 16 | cur_cqe->minor_err;
+ }
+ 
+ static unsigned int irdma_wc_read_wc_flags(struct ibv_cq_ex *ibvcq_ex)
+-- 
+2.50.0.727.gbf7dc18ff4-goog
+
