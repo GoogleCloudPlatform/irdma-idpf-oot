@@ -1,0 +1,70 @@
+From 190743e8d300bd6184844245333eca1437c7bf2d Mon Sep 17 00:00:00 2001
+From: Jacob Moroni <jmoroni@google.com>
+Date: Mon, 23 Jun 2025 20:36:18 +0000
+Subject: [PATCH 1/1] irdma: Fix send queue leaks during CIE and flush
+ completions
+
+CIE completions can arrive even if the send was not
+signaled, so these must be discarded when polled.
+
+Additionally, the SQ post_cnt must be decremented
+when a flush completion is received, otherwise
+the send queue will "fill up" if ENFORCE_SQ_SIZE
+is set and a large number of flush completions arrive.
+
+Signed-off-by: Jacob Moroni <jmoroni@google.com>
+---
+ providers/irdma/uk.c   | 8 ++++++++
+ providers/irdma/user.h | 3 ++-
+ 2 files changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/providers/irdma/uk.c b/providers/irdma/uk.c
+index 894e905bd..e6075e16f 100644
+--- a/providers/irdma/uk.c
++++ b/providers/irdma/uk.c
+@@ -274,6 +274,7 @@ __le64 *irdma_qp_get_next_send_wqe(struct irdma_qp_uk *qp, __u32 *wqe_idx,
+ 	qp->sq_wrtrk_array[*wqe_idx].wrid = info->wr_id;
+ 	qp->sq_wrtrk_array[*wqe_idx].wr_len = total_size;
+ 	qp->sq_wrtrk_array[*wqe_idx].quanta = wqe_quanta;
++	qp->sq_wrtrk_array[*wqe_idx].signaled = info->signaled;
+ 	if (qp->uk_attrs->feature_flags & IRDMA_FEATURE_ENFORCE_SQ_SIZE) {
+ 		atomic_fetch_add(&qp->sq_ring.post_cnt, 1);
+ 		if (info->signaled) {
+@@ -1567,6 +1568,10 @@ int irdma_uk_cq_poll_cmpl(struct irdma_cq_uk *cq,
+ 			info->wr_id = qp->sq_wrtrk_array[wqe_idx].wrid;
+ 			if (!info->comp_status)
+ 				info->bytes_xfered = qp->sq_wrtrk_array[wqe_idx].wr_len;
++			if (!qp->sq_wrtrk_array[wqe_idx].signaled) {
++				ret_code = ENOENT;
++				goto exit;
++			}
+ 			if (irdma_check_sq_cqe(qp, &wqe_idx)) {
+ 				info->wr_id = qp->sq_wrtrk_array[wqe_idx].wrid;
+ 				info->comp_status = IRDMA_COMPL_STATUS_UNKNOWN;
+@@ -1599,6 +1604,9 @@ int irdma_uk_cq_poll_cmpl(struct irdma_cq_uk *cq,
+ 					      &wqe_qword);
+ 				info->op_type = (__u8)FIELD_GET(IRDMAQPSQ_OPCODE,
+ 							      wqe_qword);
++				if (qp->uk_attrs->feature_flags & IRDMA_FEATURE_ENFORCE_SQ_SIZE)
++					atomic_fetch_sub(&qp->sq_ring.post_cnt,
++							 qp->sq_sigwrtrk_array[tail].post_cnt);
+ 				IRDMA_RING_SET_TAIL(qp->sq_ring,
+ 						    tail + qp->sq_wrtrk_array[tail].quanta);
+ 				if (info->op_type != IRDMAQP_OP_NOP) {
+diff --git a/providers/irdma/user.h b/providers/irdma/user.h
+index b37c9192a..7ef8ef7c2 100644
+--- a/providers/irdma/user.h
++++ b/providers/irdma/user.h
+@@ -530,7 +530,8 @@ struct irdma_sq_uk_wr_trk_info {
+ 	__u64 wrid;
+ 	__u32 wr_len;
+ 	__u16 quanta;
+-	__u8 reserved[2];
++	__u8 signaled;
++	__u8 reserved[1];
+ };
+ 
+ struct irdma_qp_quanta {
+-- 
+2.50.0.727.gbf7dc18ff4-goog
+
