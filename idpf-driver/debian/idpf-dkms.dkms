@@ -1,4 +1,4 @@
-PACKAGE_NAME="idpf"
+PACKAGE_NAME="idpf-dkms"
 PACKAGE_VERSION="2.9.0"
 AUTOINSTALL="yes"
 

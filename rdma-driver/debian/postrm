@@ -1,0 +1,46 @@
+#!/bin/sh
+set -e
+
+# --- Environment Variables ---
+NAME="irdma-dkms"
+VERSION="2.9.0"
+
+case "$1" in
+    remove|purge)
+
+        # 1. Update Kernel Module Dependencies
+        # Since the .ko files are gone, we must refresh the dependency map.
+        if [ -x /sbin/depmod ]; then
+            echo "irdma-dkms: Updating kernel module dependencies..."
+            depmod -a > /dev/null 2>&1 || true
+        fi
+
+        # 2. Trigger Initramfs update
+        # We use a trigger instead of a manual run. This ensures that if 
+        # the user is removing multiple drivers, the initrd is only rebuilt once.
+        if [ -x /usr/sbin/update-initramfs ] && [ -e /etc/initramfs-tools/initramfs.conf ]; then
+            echo "Update initramfs, please reboot after package update/uninstall completes"
+            dpkg-trigger --no-await update-initramfs
+        fi
+        
+        # 3. Final cleanup (Optional)
+        # If 'purge' is called, you would remove configuration files here.
+        if [ "$1" = "purge" ]; then
+            rm -f /etc/depmod.d/irdma.conf
+        fi
+    ;;
+
+    upgrade|failed-upgrade|abort-install|abort-upgrade)
+        # During an upgrade, we do nothing here because the new version's 
+        # postinst will handle all the logic.
+        ;;
+
+    *)
+        echo "postrm called with unknown argument \`$1'" >&2
+        exit 1
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0
