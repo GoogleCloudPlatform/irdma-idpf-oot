@@ -1,0 +1,525 @@
+From a3d6e49214ff1a81ab8b8e6962b6015392acb011 Mon Sep 17 00:00:00 2001
+From: Jacob Moroni <jmoroni@google.com>
+Date: Mon, 15 Dec 2025 22:51:02 +0000
+Subject: [PATCH] irdma: Add support for shared UD credit pool
+
+Added support for a shared UD credit pool. The credits are stored
+in a table that is exposed as a shared memory segment in every
+process that has the option enabled. This option is disabled by
+default but can be enabled by setting:
+
+IRDMA_SHARED_UD_CREDITS=X
+
+Signed-off-by: Jacob Moroni <jmoroni@google.com>
+---
+ providers/irdma/CMakeLists.txt |   2 +
+ providers/irdma/uk.c           |  14 +++
+ providers/irdma/umain.c        | 199 ++++++++++++++++++++++++++++++++-
+ providers/irdma/umain.h        |   3 +
+ providers/irdma/user.h         |  16 ++-
+ providers/irdma/uverbs.c       |  74 ++++++++++--
+ 6 files changed, 295 insertions(+), 13 deletions(-)
+
+diff --git a/providers/irdma/CMakeLists.txt b/providers/irdma/CMakeLists.txt
+index 6b7fe3600..56832743a 100644
+--- a/providers/irdma/CMakeLists.txt
++++ b/providers/irdma/CMakeLists.txt
+@@ -5,3 +5,5 @@ rdma_provider(irdma
+   umain.c
+   uverbs.c
+ )
++
++target_link_libraries("irdma-rdmav${IBVERBS_PABI_VERSION}" PRIVATE rt)
+diff --git a/providers/irdma/uk.c b/providers/irdma/uk.c
+index 8bcbb80a6..a89d8063b 100644
+--- a/providers/irdma/uk.c
++++ b/providers/irdma/uk.c
+@@ -281,6 +281,13 @@ __le64 *irdma_qp_get_next_send_wqe(struct irdma_qp_uk *qp, __u32 *wqe_idx,
+ 	 */
+ 	qp->sq_wrtrk_array[*wqe_idx].signaled_override =
+ 		info->signaled_override;
++	/* Credit pool support. */
++	qp->sq_wrtrk_array[*wqe_idx].shared_credit =
++		info->shared_credit;
++	qp->sq_wrtrk_array[*wqe_idx].credit_cookie =
++		info->credit_cookie;
++	qp->sq_wrtrk_array[*wqe_idx].credit_index =
++		info->credit_index;
+ 	if (qp->uk_attrs->feature_flags & IRDMA_FEATURE_ENFORCE_SQ_SIZE) {
+ 		atomic_fetch_add(&qp->sq_ring.post_cnt, 1);
+ 		if (info->signaled) {
+@@ -1571,6 +1578,13 @@ int irdma_uk_cq_poll_cmpl(struct irdma_cq_uk *cq,
+ 	} else { /* q_type is IRDMA_CQE_QTYPE_SQ */
+ 		info->signaled_override =
+ 			qp->sq_wrtrk_array[wqe_idx].signaled_override;
++		/* Credit pool support. */
++		info->shared_credit =
++			qp->sq_wrtrk_array[wqe_idx].shared_credit;
++		info->credit_cookie =
++			qp->sq_wrtrk_array[wqe_idx].credit_cookie;
++		info->credit_index =
++			qp->sq_wrtrk_array[wqe_idx].credit_index;
+ 		if (qp->first_sq_wq) {
+ 			if (wqe_idx + 1 >= qp->conn_wqes)
+ 				qp->first_sq_wq = false;
+diff --git a/providers/irdma/umain.c b/providers/irdma/umain.c
+index 64236e005..e3b21ae5d 100644
+--- a/providers/irdma/umain.c
++++ b/providers/irdma/umain.c
+@@ -22,11 +22,40 @@
+ #include "umain.h"
+ #include "abi.h"
+ 
++/* Shm ABI max. */
++#define SHARED_UD_MAX_CREDITS            1024u
++
++/* If a credit is held for >= 8 seconds, assume owner dead and reclaim it. */
++#define SHARED_UD_CREDIT_RECLAIM_S       8u
++
++#define SHARED_UD_SHM_NAME               "/irdma_ud_shm"
++#define SHARED_UD_SHM_SIZE               sizeof(struct shared_ud_shm)
++#define SHARED_UD_SHM_ABI_VER            1
++
++struct shared_ud_shm {
++	/* Shm region is initialized to 0 by default. This gets set to true by
++	 * the process that wins the race to create the region.
++	 */
++	_Atomic(bool) init_done;
++	uint32_t abi_version;
++	/* Credit array. */
++	_Atomic(uint32_t) acquire_time[SHARED_UD_MAX_CREDITS];
++};
++
++/* Mutual exclusion during init isn't strictly necessary... there can already be
++ * multiple independent processes racing for init and the init routine is robust
++ * in that scenario...
++ */
++static pthread_mutex_t shared_ud_init_lock = PTHREAD_MUTEX_INITIALIZER;
++static _Atomic(bool) shared_ud_init_done;
++static struct shared_ud_shm *g_shared_ud_shm;
++
+ struct irdma_env_params env = {
+ 	.pass_cie_vendor_err = false,
+ 	.ud_qd_override = 0,
+ 	.transparent_ud_qd_override = 0,
+ 	.cq_size_override = 0,
++	.shared_ud_credits = 0,
+ };
+ 
+ unsigned int irdma_dbg;
+@@ -165,6 +194,151 @@ static void i40iw_set_hw_attrs(struct irdma_uk_attrs *attrs)
+ 	attrs->min_hw_wq_size = I40IW_MIN_WQ_SIZE;
+ }
+ 
++static uint32_t seconds(void)
++{
++	struct timespec ts;
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	return ts.tv_sec;
++}
++
++/* Try to obtain a UD credit. May fail if racing with another thread. Returns
++ * true on success.
++ */
++static bool try_ud_credit(_Atomic(uint32_t) *credit_ts, uint32_t *old_credit_ts,
++			  uint32_t now)
++{
++	return atomic_compare_exchange_weak_explicit(credit_ts,
++						     old_credit_ts,
++						     now,
++						     memory_order_relaxed,
++						     memory_order_relaxed);
++}
++
++/* Returns -1 on failure, or the credit index otherwise. */
++int try_acquire_credit(uint32_t *cookie)
++{
++	struct shared_ud_shm *inst = g_shared_ud_shm;
++	uint32_t acquisition_ts;
++	uint32_t delta;
++	uint32_t now;
++	size_t i;
++
++	if (!atomic_load_explicit(&shared_ud_init_done, memory_order_acquire))
++		return -1;
++
++	now = seconds();
++
++	for (i = 0; i < env.shared_ud_credits; i++) {
++		acquisition_ts =
++			atomic_load_explicit(&inst->acquire_time[i],
++					     memory_order_relaxed);
++		delta = now - acquisition_ts;
++		if (!acquisition_ts || delta > SHARED_UD_CREDIT_RECLAIM_S) {
++			if (try_ud_credit(&inst->acquire_time[i],
++					  &acquisition_ts, now)) {
++				*cookie = now;
++				return i;
++			}
++		}
++	}
++
++	return -1;
++}
++
++/* Return a credit to the table. */
++void release_credit(int index, uint32_t cookie)
++{
++	struct shared_ud_shm *inst = g_shared_ud_shm;
++
++	/* No need to check init because returning a credit implies it. */
++	atomic_compare_exchange_strong_explicit(&inst->acquire_time[index],
++						&cookie, 0,
++						memory_order_relaxed,
++						memory_order_relaxed);
++}
++
++/* Initialize the backpressure shared memory region for the first time. */
++static void init_backpressure_region(struct shared_ud_shm *inst)
++{
++	size_t i;
++
++	for (i = 0; i < SHARED_UD_MAX_CREDITS; i++)
++		atomic_store(&inst->acquire_time[i], 0);
++
++	inst->abi_version = SHARED_UD_SHM_ABI_VER;
++
++	atomic_store(&inst->init_done, true);
++}
++
++static void init_ud_credits(void)
++{
++	int shm_fd;
++	bool created = false;
++	struct shared_ud_shm *inst;
++
++	if (atomic_load_explicit(&shared_ud_init_done, memory_order_relaxed))
++		return;
++
++	shm_fd = shm_open(SHARED_UD_SHM_NAME, O_CREAT | O_EXCL | O_RDWR, 0666);
++	if (shm_fd >= 0) {
++		/* We won the race to create the region. */
++		created = true;
++	} else if (errno == EEXIST) {
++		/* We lost the race. */
++		shm_fd = shm_open(SHARED_UD_SHM_NAME, O_RDWR, 0);
++		if (shm_fd == -1) {
++			perror("Failed to open existing backpressure region");
++			return;
++		}
++	} else {
++		perror("Failed to open backpressure region");
++		return;
++	}
++
++	/* ftruncate is supposed to be atomic... */
++	if (ftruncate(shm_fd, SHARED_UD_SHM_SIZE) == -1) {
++		perror("Failed to set backpressure region size");
++		close(shm_fd);
++		if (created)
++			shm_unlink(SHARED_UD_SHM_NAME);
++		return;
++	}
++
++	inst = mmap(NULL, SHARED_UD_SHM_SIZE, PROT_READ | PROT_WRITE,
++		    MAP_SHARED, shm_fd, 0);
++	if (inst == MAP_FAILED) {
++		perror("Failed to map backpressure region");
++		close(shm_fd);
++		if (created)
++			shm_unlink(SHARED_UD_SHM_NAME);
++		exit(EXIT_FAILURE);
++	}
++
++	if (created) {
++		printf("Created shared UD credit table\n");
++		init_backpressure_region(inst);
++	} else {
++		while (!atomic_load(&inst->init_done))
++			/* Wait for the creator to finish initializing. */
++			usleep(1000);
++		if (inst->abi_version != SHARED_UD_SHM_ABI_VER) {
++			fprintf(stderr, "Backpressure region ABI mismatch!\n"
++					"This is expected if an update was "
++					"performed without rebooting.\n"
++					"Cleaning up then exiting. "
++					"Please restart the application.\n");
++			/* Delete the region. */
++			shm_unlink(SHARED_UD_SHM_NAME);
++			exit(EXIT_FAILURE);
++		}
++	}
++
++	close(shm_fd);
++
++	g_shared_ud_shm = inst;
++	atomic_store_explicit(&shared_ud_init_done, true, memory_order_release);
++}
++
+ /**
+  * irdma_ualloc_context - allocate context for user app
+  * @ibdev: ib device created during irdma_driver_init
+@@ -401,6 +575,20 @@ static struct verbs_device *irdma_device_alloc(struct verbs_sysfs_dev *sysfs_dev
+ 			env.cq_size_override = tmp;
+ 	}
+ 
++	env_val = getenv("IRDMA_SHARED_UD_CREDITS");
++	if (env_val) {
++		tmp = atoi(env_val);
++		if (tmp < 0) {
++			fprintf(stderr, "Ignoring invalid "
++				"IRDMA_SHARED_UD_CREDITS value of %d\n", tmp);
++		} else if (tmp > SHARED_UD_MAX_CREDITS) {
++			fprintf(stderr, "Clamping IRDMA_SHARED_UD_CREDITS to "
++				"%d\n", SHARED_UD_MAX_CREDITS);
++			tmp = SHARED_UD_MAX_CREDITS;
++		}
++		env.shared_ud_credits = tmp;
++	}
++
+ 	env_val = getenv("IRDMA_DEBUG");
+ 	if (env_val)
+ 		irdma_dbg = atoi(env_val);
+@@ -411,9 +599,11 @@ static struct verbs_device *irdma_device_alloc(struct verbs_sysfs_dev *sysfs_dev
+ 		       "\tIRDMA_PASS_CIE_VENDOR_ERR = %d\n"
+ 		       "\tIRDMA_UD_QD_OVERRIDE = %d\n"
+ 		       "\tIRDMA_TRANSPARENT_UD_QD_OVERRIDE = %d\n"
+-		       "\tIRDMA_CQ_SIZE_OVERRIDE = %d\n",
++		       "\tIRDMA_CQ_SIZE_OVERRIDE = %d\n"
++		       "\tIRDMA_SHARED_UD_CREDITS = %d\n",
+ 		       env.pass_cie_vendor_err, env.ud_qd_override,
+-		       env.transparent_ud_qd_override, env.cq_size_override);
++		       env.transparent_ud_qd_override, env.cq_size_override,
++		       env.shared_ud_credits);
+ 	}
+ 
+ 	/* Create debug_thread only once upon first call to irdma_device_alloc
+@@ -433,6 +623,11 @@ static struct verbs_device *irdma_device_alloc(struct verbs_sysfs_dev *sysfs_dev
+ 		}
+ 	}
+ 
++	pthread_mutex_lock(&shared_ud_init_lock);
++	if (env.transparent_ud_qd_override && env.shared_ud_credits)
++		init_ud_credits();
++	pthread_mutex_unlock(&shared_ud_init_lock);
++
+ 	return &dev->ibv_dev;
+ }
+ 
+diff --git a/providers/irdma/umain.h b/providers/irdma/umain.h
+index f8db50f96..8235a0fa1 100644
+--- a/providers/irdma/umain.h
++++ b/providers/irdma/umain.h
+@@ -262,4 +262,7 @@ struct ibv_td *irdma_ualloc_td(struct ibv_context *context,
+ int irdma_udealloc_td(struct ibv_td *td);
+ struct ibv_pd *irdma_ualloc_parent_domain(struct ibv_context *context,
+ 					  struct ibv_parent_domain_init_attr *int_attr);
++int try_acquire_credit(uint32_t *cookie);
++void release_credit(int index, uint32_t cookie);
++
+ #endif /* IRDMA_UMAIN_H */
+diff --git a/providers/irdma/user.h b/providers/irdma/user.h
+index 32c9b53d5..f7be5d318 100644
+--- a/providers/irdma/user.h
++++ b/providers/irdma/user.h
+@@ -44,6 +44,9 @@ struct irdma_env_params {
+ 	 * value specified will be used instead.
+ 	 */
+ 	uint32_t cq_size_override;
++
++	/* Number of shared UD credits. Max of 1024. */
++	uint32_t shared_ud_credits;
+ };
+ 
+ extern struct irdma_env_params env;
+@@ -411,6 +414,7 @@ struct irdma_post_sq_info {
+ 	__u8 l4len;
+ 	bool signaled:1;
+ 	bool signaled_override:1;
++	bool shared_credit:1;
+ 	bool read_fence:1;
+ 	bool local_fence:1;
+ 	bool inline_data:1;
+@@ -420,6 +424,8 @@ struct irdma_post_sq_info {
+ 	bool udp_hdr:1;
+ 	bool defer_flag:1;
+ 	bool remote_atomic_en:1;
++	uint32_t credit_cookie;
++	int credit_index;
+ 	__u32 imm_data;
+ 	__u32 stag_to_inv;
+ 	union {
+@@ -459,6 +465,9 @@ struct irdma_cq_poll_info {
+ 	bool ud_smac_valid:1;
+ 	bool imm_valid:1;
+ 	bool signaled_override:1;
++	bool shared_credit:1;
++	uint32_t credit_cookie;
++	int credit_index;
+ 	union {
+ 		__u32 tcp_sqn;
+ 		__u32 roce_psn;
+@@ -563,9 +572,12 @@ struct irdma_sig_wr_trk_info {
+ struct irdma_sq_uk_wr_trk_info {
+ 	__u64 wrid;
+ 	__u32 wr_len;
++	__u32 credit_cookie;
++	int credit_index;
+ 	__u16 quanta;
+-	__u8 signaled;
+-	__u8 signaled_override;
++	bool signaled:1;
++	bool signaled_override:1;
++	bool shared_credit:1;
+ };
+ 
+ struct irdma_qp_quanta {
+diff --git a/providers/irdma/uverbs.c b/providers/irdma/uverbs.c
+index b739190a0..f9bf98da1 100644
+--- a/providers/irdma/uverbs.c
++++ b/providers/irdma/uverbs.c
+@@ -1111,7 +1111,9 @@ static void irdma_process_cqe(struct ibv_wc *entry, struct irdma_cq_poll_info *c
+ }
+ 
+ static int __irdma_upost_send(struct ibv_qp *ib_qp, struct ibv_send_wr *ib_wr,
+-			      struct ibv_send_wr **bad_wr);
++			      struct ibv_send_wr **bad_wr, bool shared_credit,
++			      uint32_t credit_cookie, int credit_index);
++static void irdma_try_drain_sq_backlog(struct irdma_uqp *qp);
+ 
+ /**
+  * irdma_handle_deferred_ud - Check for and handle the UD deferred SQ.
+@@ -1134,7 +1136,7 @@ static void irdma_handle_deferred_ud(struct irdma_uqp *qp)
+ 	wr->sg_list = qp->ud_ring.entry[masked_cons].sgl;
+ 	qp->ud_ring.cons++;
+ 
+-	__irdma_upost_send(&qp->ibv_qp, wr, &bad_wr);
++	__irdma_upost_send(&qp->ibv_qp, wr, &bad_wr, false, 0, 0);
+ }
+ 
+ /**
+@@ -1164,9 +1166,15 @@ static int irdma_poll_one(struct irdma_cq_uk *ukcq, struct irdma_cq_poll_info *c
+ 		    cur_cqe->q_type == IRDMA_CQE_QTYPE_SQ) {
+ 			irdma_spin_lock(&iwuqp->lock);
+ 			if (!iwuqp->ud_ring.delete_in_progress) {
+-				iwuqp->ud_ring.active--;
+-				irdma_handle_deferred_ud(iwuqp);
++				if (cur_cqe->shared_credit) {
++					release_credit(cur_cqe->credit_index,
++						       cur_cqe->credit_cookie);
++				} else {
++					iwuqp->ud_ring.active--;
++					irdma_handle_deferred_ud(iwuqp);
++				}
+ 			}
++			irdma_try_drain_sq_backlog(iwuqp);
+ 			irdma_spin_unlock(&iwuqp->lock);
+ 		}
+ 
+@@ -2150,11 +2158,15 @@ static void irdma_enqueue_deferred_ud(struct irdma_uqp *iwuqp,
+  * @ib_qp: qp to post wr
+  * @ib_wr: work request ptr
+  * @bad_wr: return of bad wr if err
++ * @shared_credit: Flag to indicate whether a shared credit was used. UD only.
++ * @credit_cookie: Shared credit cookie. Only used if shared_credit==true.
++ * @credit_index: Shared credit index. Only used if shared_credit==true.
+  *
+  * Context: Assumes QP lock is held.
+  */
+ static int __irdma_upost_send(struct ibv_qp *ib_qp, struct ibv_send_wr *ib_wr,
+-			      struct ibv_send_wr **bad_wr)
++			      struct ibv_send_wr **bad_wr, bool shared_credit,
++			      uint32_t credit_cookie, int credit_index)
+ {
+ 	struct irdma_post_sq_info info;
+ 	struct irdma_uvcontext *iwvctx;
+@@ -2174,7 +2186,7 @@ static int __irdma_upost_send(struct ibv_qp *ib_qp, struct ibv_send_wr *ib_wr,
+ 
+ 	while (ib_wr) {
+ 		if (env.transparent_ud_qd_override &&
+-		    ib_qp->qp_type == IBV_QPT_UD) {
++		    ib_qp->qp_type == IBV_QPT_UD && !shared_credit) {
+ 			if (iwuqp->ud_ring.active >=
+ 			    env.transparent_ud_qd_override) {
+ 				/* HW limit is reached, queue it for later. */
+@@ -2252,7 +2264,11 @@ static int __irdma_upost_send(struct ibv_qp *ib_qp, struct ibv_send_wr *ib_wr,
+ 				info.op.send.dest_qp = ib_wr->wr.ud.remote_qpn;
+ 
+ 				if (env.transparent_ud_qd_override) {
+-					iwuqp->ud_ring.active++;
++					info.shared_credit = shared_credit;
++					info.credit_cookie = credit_cookie;
++					info.credit_index = credit_index;
++					if (!shared_credit)
++						iwuqp->ud_ring.active++;
+ 					if (!info.signaled) {
+ 						info.signaled = true;
+ 						info.signaled_override = true;
+@@ -2364,7 +2380,7 @@ static int __irdma_upost_send(struct ibv_qp *ib_qp, struct ibv_send_wr *ib_wr,
+ 	if (err)
+ 		*bad_wr = ib_wr;
+ 
+-	if (!iwuqp->qp.push_db)
++	if (!iwuqp->qp.push_db && !shared_credit)
+ 		irdma_uk_qp_post_wr(&iwuqp->qp);
+ 	if (reflush)
+ 		irdma_issue_flush(ib_qp, 1, 0);
+@@ -2372,6 +2388,43 @@ static int __irdma_upost_send(struct ibv_qp *ib_qp, struct ibv_send_wr *ib_wr,
+ 	return err;
+ }
+ 
++/**
++ * irdma_try_drain_sq_backlog - Try to drain the backlog using shared credits.
++ * @qp: qp
++ *
++ * Context: QP lock must be held.
++ */
++static void irdma_try_drain_sq_backlog(struct irdma_uqp *qp)
++{
++	struct ibv_send_wr *bad_wr;
++	struct ibv_send_wr *wr;
++	bool posted = false;
++	uint32_t cookie;
++	uint32_t cons;
++	int ret;
++
++	while (true) {
++		if (qp->ud_ring.cons == qp->ud_ring.prod)
++			break;
++
++		ret = try_acquire_credit(&cookie);
++		if (ret < 0)
++			break;
++
++		cons = qp->ud_ring.cons & (qp->ud_ring.ring_size - 1u);
++		wr = &qp->ud_ring.entry[cons].wqe;
++		wr->sg_list = qp->ud_ring.entry[cons].sgl;
++
++		qp->ud_ring.cons++;
++
++		__irdma_upost_send(&qp->ibv_qp, wr, &bad_wr, true, cookie, ret);
++		posted = true;
++	}
++
++	if (posted)
++		irdma_uk_qp_post_wr(&qp->qp);
++}
++
+ /**
+  * irdma_post_send -  post send wr for user application
+  * @ib_qp: qp to post wr
+@@ -2390,7 +2443,10 @@ int irdma_upost_send(struct ibv_qp *ib_qp, struct ibv_send_wr *ib_wr,
+ 	if (err)
+ 		return err;
+ 
+-	err = __irdma_upost_send(ib_qp, ib_wr, bad_wr);
++	err = __irdma_upost_send(ib_qp, ib_wr, bad_wr, false, 0, 0);
++
++	if (env.transparent_ud_qd_override && ib_qp->qp_type == IBV_QPT_UD)
++		irdma_try_drain_sq_backlog(iwuqp);
+ 
+ 	irdma_spin_unlock(&iwuqp->lock);
+ 
+-- 
+2.52.0.239.gd5f0c6e74e-goog
+
