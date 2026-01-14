@@ -1,0 +1,6 @@
+idpf-dkms (0.0.654-1) UNRELEASED; urgency=medium
+
+  * Initial dev commit of the idpf driver dkms package for Debian/Ubuntu
+  * Ported from RPM spec file idpf-dkms.spec
+
+ -- Intel Corporation <support.intel.com>  Wed, 14 Jan 2026 01:13:44 +0000
