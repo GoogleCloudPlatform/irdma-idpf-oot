@@ -1,0 +1,6 @@
+irdma-dkms (0.0.129-1) UNRELEASED; urgency=medium
+
+  * Initial dev commit of the irdma driver dkms package for Debian/Ubuntu
+  * Ported from RPM spec file irdma.spec
+
+ -- Intel Corporation <support.intel.com>  Thu, 15 Jan 2026 23:35:30 +0000

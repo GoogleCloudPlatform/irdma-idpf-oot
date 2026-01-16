@@ -1,5 +1,5 @@
 .PHONY: build_irdma
 
 build_irdma:
-	bash ./build.sh noinstall
+	SKIP_CROSS_COMPILE="true" bash ./build.sh noinstall
 
