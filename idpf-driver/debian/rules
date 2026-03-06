@@ -8,8 +8,8 @@ override_dh_auto_build:
 
 override_dh_auto_install:
 	# Create the DKMS source directory
-	mkdir -p debian/idpf-dkms/usr/src/idpf-0.0.654
-	rsync -av --exclude 'debian' ./ debian/idpf-dkms/usr/src/idpf-0.0.654/
+	mkdir -p debian/idpf-dkms/usr/src/idpf-0.0.659
+	rsync -av --exclude 'debian' ./ debian/idpf-dkms/usr/src/idpf-0.0.659/
 	
 	# Setup depmod.d override
 	mkdir -p debian/idpf-dkms/etc/depmod.d/

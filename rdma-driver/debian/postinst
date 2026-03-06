@@ -2,7 +2,7 @@
 set -e
 
 NAME="irdma-dkms"
-VERSION="0.0.129"
+VERSION="0.0.129.24"
 
 case "$1" in
 	configure)

@@ -3,7 +3,7 @@ set -e
 
 # --- Environment Variables ---
 NAME="idpf-dkms"
-VERSION="0.0.654"
+VERSION="0.0.659"
 
 case "$1" in
     remove|purge)

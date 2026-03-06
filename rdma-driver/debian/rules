@@ -8,8 +8,8 @@ override_dh_auto_build:
 
 override_dh_auto_install:
 	# Create the DKMS source directory
-	mkdir -p debian/irdma-dkms/usr/src/irdma-0.0.129
-	rsync -av --exclude 'debian' ./ debian/irdma-dkms/usr/src/irdma-0.0.129/
+	mkdir -p debian/irdma-dkms/usr/src/irdma-0.0.129.24
+	rsync -av --exclude 'debian' ./ debian/irdma-dkms/usr/src/irdma-0.0.129.24/
 	
 	# Setup depmod.d override
 	mkdir -p debian/irdma-dkms/etc/depmod.d/

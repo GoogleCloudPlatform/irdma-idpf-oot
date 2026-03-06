@@ -10,7 +10,7 @@ Summary: Intel(R) Ethernet Connection E800 Series Linux iRDMA Driver
 %if 0%{?_IRDMA_VER_:1}
 %define version %{_IRDMA_VER_}
 %else
-%define version 0.0.129
+%define version 0.0.129.24
 %endif
 %if 0%{?_IRDMA_REL_:1}
 %define release %{_IRDMA_REL_}
