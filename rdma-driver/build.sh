@@ -39,6 +39,48 @@ cmd_initrd() {
 	fi
 }
 
+check_mlnx_compat() {
+	if grep -q "mlx_backport" /proc/kallsyms; then
+		USE_OFED=1
+		USE_MLNX_COMPAT=1
+	fi
+	if [ -e /usr/src/ofa_kernel/$(uname -m)/$(uname -r) ]; then
+		MLNX_SRC_PREFIX="/usr/src/ofa_kernel/$(uname -m)/$(uname -r)"
+	elif [ -e /usr/src/ofa_kernel/default ]; then
+		MLNX_SRC_PREFIX="/usr/src/ofa_kernel/default"
+	fi
+	echo "DOCA-OFED compatibiltiy needed: ${USE_MLNX_COMPAT}"
+	if [ "$USE_MLNX_COMPAT" == "1" ]; then
+		echo "DOCA-OFED src location: ${MLNX_SRC_PREFIX}"
+	fi
+}
+
+USE_OFED=0
+# Determine if we need MLNX compatibility
+USE_MLNX_COMPAT=0
+NO_INSTALL=0
+CHECK=0
+CHECK_FLAGS=
+EXTRA_INCS=
+ARM_OPTS=
+
+for arg in "$@"; do
+	if [ "$arg" == "ofed" ]; then
+		USE_OFED=1
+	elif [ "$arg" == "noinstall" ]; then
+		NO_INSTALL=1
+	elif [ "$arg" == "sparse" ]; then
+		CHECK=1
+		CHECK_FLAGS="-fdiagnostic-prefix -D__CHECK_ENDIAN__ -Wsparse-error"
+	elif [ -d "$arg" ]; then
+		EXTRA_INCS+="-I${arg} "
+	fi
+done
+
+MLNX_SRC_PREFIX="/usr/src/ofa_kernel/default"
+
+
+check_mlnx_compat
 # Use KSRC if defined.
 if [ -z "$KSRC" ]; then
 
@@ -119,10 +161,12 @@ fi
 if [ -e ${KSRC}/include/generated/autoconf.h ]; then
 	INCLUDE_AUTOCONF_HDR="-include ${KSRC}/include/generated/autoconf.h"
 	export INCLUDE_AUTOCONF_HDR
+	export CONFFILE=${KSRC}/include/generated/autoconf.h
 	get_suse_local_ver "${KSRC}/include/generated/autoconf.h"
 elif [ -e ${KSRC}/include/linux/autoconf.h ]; then
 	INCLUDE_AUTOCONF_HDR="-include ${KSRC}/include/linux/autoconf.h"
 	export INCLUDE_AUTOCONF_HDR
+	export CONFFILE=${KSRC}/include/linux.autoconf.h
 	get_suse_local_ver "${KSRC}/include/linux/autoconf.h"
 fi
 
@@ -131,28 +175,8 @@ if [ -e ${KSRC}/include/generated/utsrelease.h ]; then
 	export UTSRELEASE_HDR
 fi
 
-USE_OFED=0
-NO_INSTALL=0
-CHECK=0
-CHECK_FLAGS=
-EXTRA_INCS=
-ARM_OPTS=
-
-for arg in "$@"; do
-	if [ "$arg" == "ofed" ]; then
-		USE_OFED=1
-	elif [ "$arg" == "noinstall" ]; then
-		NO_INSTALL=1
-	elif [ "$arg" == "sparse" ]; then
-		CHECK=1
-		CHECK_FLAGS="-fdiagnostic-prefix -D__CHECK_ENDIAN__ -Wsparse-error"
-	elif [ -d "$arg" ]; then
-		EXTRA_INCS+="-I${arg} "
-	fi
-done
 
 # Generate irdma_kcompat_gen.h
-export CONFFILE=$KSRC/include/generated/autoconf.h
 chmod +x $PWD/src/irdma/kcompat-generator.sh
 GSRC=$KSRC
 if [ ! -d ${KSRC}/include/rdma ]; then
@@ -172,10 +196,22 @@ if [ ! -d ${KSRC}/include/rdma ]; then
 	fi
 fi
 
+# If using doca-ofed, we want to look in the ofa-kernel folder first
+if [ "$USE_MLNX_COMPAT" == "1" ]; then
+	export KSRC_ADDTL="${MLNX_SRC_PREFIX}"
+	echo "KSRC_ADDTL: $KSRC_ADDTL"
+fi
+
 echo "KSRC: $KSRC"
 echo "GSRC: $GSRC"
 
-OUT=$PWD/src/irdma/irdma_kcompat_gen.h KSRC=$GSRC QUIET_COMPAT=1 $PWD/src/irdma/kcompat-generator.sh
+if [ "$USE_MLNX_COMPAT" == "1" ]; then
+	# Look in ofa-kernel first to handle redefinitions/substitutions
+	OUT=$PWD/src/irdma/irdma_kcompat_gen.h KSRC=${KSRC_ADDTL} KSRC_ADDTL=${GSRC} QUIET_COMPAT=1 $PWD/src/irdma/kcompat-generator.sh
+else
+	OUT=$PWD/src/irdma/irdma_kcompat_gen.h KSRC=$GSRC QUIET_COMPAT=1 $PWD/src/irdma/kcompat-generator.sh
+fi
+
 if [ $? -ne 0 ]; then
 	echo "Failed to generate $PWD/src/irdma/irdma_kcompat_gen.h"
 	exit 1
@@ -217,7 +253,11 @@ fi
 
 if [ "$USE_OFED" == "1" ]; then
 	if [ -z "$OFED_OPENIB_PATH" ]; then
-		OFED_OPENIB_PATH="/usr/src/openib"
+		if [ "$USE_MLNX_COMPAT" == "1" ]; then
+			OFED_OPENIB_PATH="${MLNX_SRC_PREFIX}"
+		else
+			OFED_OPENIB_PATH="/usr/src/openib"
+		fi
 	fi
 	if [ ! -e $OFED_OPENIB_PATH ]; then
 		echo "Please install OFED development package"
@@ -225,9 +265,15 @@ if [ "$USE_OFED" == "1" ]; then
 	fi
 
 	if [ -z "$OFED_VERSION_CODE" ]; then
-		V1=$(ofed_info | head -1 | cut -d '-' -f 2 | cut -d '.' -f 1)
-		V2=$(ofed_info | head -1 | cut -d '-' -f 2 | cut -d '.' -f 2 | cut -d ':' -f 1)
+		# DOCA might add additional strings so cut might not work universally
+		RAW_VER=$(ofed_info | sed -E 's/.*-([0-9]+\.[0-9]+)-.*/\1/')
+		IFS='.' read -r V1 V2 <<< "$RAW_VER"
 		OFED_VERSION_CODE=$(( ($V1 << 16) + ($V2 << 8) ))
+		if [ "$USE_MLNX_COMPAT" == "1" ]; then
+			OFED_VER_STR="-D__DOCA_OFED__ -D__DOCA_OFED_${V1}_${V2}__"
+		else
+			OFED_VER_STR="-D__OFED_${V1}_${V2}__"
+		fi
 	fi
 
 	if [ ${OFED_VERSION_CODE} -lt $(( (4 << 16) + (8 << 8) )) ]; then
@@ -261,7 +307,7 @@ if [ "$USE_OFED" == "1" ]; then
 	if [ ${OFED_VERSION_CODE} == $(( (4 << 16) + (8 << 8) )) ]; then
 		make "CFLAGS_MODULE=-DMODULE -DSLE_LOCALVERSION_CODE=${SLE_LOCALVERSION_CODE} -D__OFED_4_8__ -DOFED_VERSION_CODE=${OFED_VERSION_CODE} ${EXTRA_INCS}" -j$nproc -C $KSRC M=$PWD/src/irdma W=1 C=$CHECK CF="$CHECK_FLAGS"
 	else
-		make "CFLAGS_MODULE=-DMODULE -DSLE_LOCALVERSION_CODE=${SLE_LOCALVERSION_CODE} -D__OFED_BUILD__ -DOFED_VERSION_CODE=${OFED_VERSION_CODE} ${EXTRA_INCS}" -j$nproc -C $KSRC M=$PWD/src/irdma W=1 C=$CHECK CF="$CHECK_FLAGS"
+		make "CFLAGS_MODULE=-DMODULE -DSLE_LOCALVERSION_CODE=${SLE_LOCALVERSION_CODE} -D__OFED_BUILD__ ${OFED_VER_STR} -DOFED_VERSION_CODE=${OFED_VERSION_CODE} ${EXTRA_INCS}" -j$nproc -C $KSRC M=$PWD/src/irdma W=1 C=$CHECK CF="$CHECK_FLAGS"
 	fi
 else
 	# WA for missing perl modules in ACC SDK (errors in kernel-doc script)
