@@ -79,7 +79,27 @@ function find-decl() {
 	what="$1"
 	end="$2"
 	shift 2
+	files=("$@")
+	addtl_files=()
+	if [ ! -z "${KSRC_ADDTL-}" ]; then
+		for file in "${files[@]}"; do
+			if [ ! -e "${file}" ]; then
+				# file does not exist in compat, need to look for it in the kernel source
+				addtl_files+=("${KSRC_ADDTL-}/${file}")
+			elif grep -q "include_next" "${file}"; then
+				# file exists in compat, but includes the original hdr via include_next
+				addtl_files+=("${KSRC_ADDTL-}/${file}")
+			fi
+		done
+	fi
 	files="$(filter-out-bad-files "$@")" || die
+	if [ ${#addtl_files[@]} -ne 0 ]; then
+		addtl_files="$(filter-out-bad-files "${addtl_files[@]}")" || die
+		if [ -z "${files}" ] && [ -z "${addtl_files}" ]; then
+			return 0;
+		fi
+		files="${files} ${addtl_files}"
+	fi
 	if [ -z "$files" ]; then
 		return 0
 	fi
