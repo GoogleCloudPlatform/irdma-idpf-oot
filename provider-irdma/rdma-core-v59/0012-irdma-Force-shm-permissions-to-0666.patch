@@ -1,0 +1,30 @@
+From e13de82609bb5ec77d37ad204b677b212c997de8 Mon Sep 17 00:00:00 2001
+From: Jacob Moroni <jmoroni@google.com>
+Date: Wed, 11 Mar 2026 17:29:08 +0000
+Subject: [PATCH] irdma: Force shm permissions to 0666
+
+Previously, a restrictive umask could cause the shm segment
+to be created but inaccessible by users other than the creator.
+
+Signed-off-by: Jacob Moroni <jmoroni@google.com>
+---
+ providers/irdma/umain.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/providers/irdma/umain.c b/providers/irdma/umain.c
+index 07bd52694..47b53d09c 100644
+--- a/providers/irdma/umain.c
++++ b/providers/irdma/umain.c
+@@ -279,6 +279,9 @@ static void init_ud_credits(void)
+ 	shm_fd = shm_open(SHARED_UD_SHM_NAME, O_CREAT | O_EXCL | O_RDWR, 0666);
+ 	if (shm_fd >= 0) {
+ 		/* We won the race to create the region. */
++		/* Force 0666 permissions to override any restrictive umask */
++		if (fchmod(shm_fd, 0666) == -1)
++			perror("Failed to force 0666 permissions on shm");
+ 		created = true;
+ 	} else if (errno == EEXIST) {
+ 		/* We lost the race. */
+-- 
+2.53.0.473.g4a7958ca14-goog
+
