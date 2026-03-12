@@ -60,6 +60,15 @@ for arg in "$@"; do
 	fi
 done
 
+RV_INSTALL_TEMP_DIR=$(mktemp -d -p "/run/user/$(id -u)" -t rl810-rv-install-XXXXXXXXXX)
+function cleanup() {
+	echo "Cleaning up temporary directory ${RV_INSTALL_TEMP_DIR}..."
+	rm -rf "${RV_INSTALL_TEMP_DIR}"
+}
+trap cleanup EXIT SIGINT SIGTERM SIGHUP
+cd "${RV_INSTALL_TEMP_DIR}"
+echo "Working in temporary directory ${RV_INSTALL_TEMP_DIR}"
+
 echo "Installing build dependencies..."
 sudo dnf install -y kernel-rpm-macros libuuid-devel rpm-build make gcc autoconf automake libtool kernel-devel-$(uname -r)
 
