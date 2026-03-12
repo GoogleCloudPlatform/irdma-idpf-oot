@@ -81,6 +81,6 @@ make -j"$(nproc)"
 sudo make install
 popd
 
-sudo modprobe rv
+sudo modprobe rv fr_page_list_len=256
 
 echo "Installation complete!"
