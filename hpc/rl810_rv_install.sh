@@ -52,8 +52,8 @@
 
 set -e
 
-LIBFABRIC_VERSION=v2.4.0
-IEFS_KERNEL_UPDATES_VERSION=ecf39a2
+LIBFABRIC_VERSION=88bfd44
+IEFS_KERNEL_UPDATES_VERSION=c9be17c
 
 BUILD_LIBFABRIC=true
 for arg in "$@"; do
@@ -88,8 +88,9 @@ popd
 
 if ${BUILD_LIBFABRIC}; then
 	echo "Building and installing libfabric..."
-	git clone --branch "${LIBFABRIC_VERSION}" --depth 1 https://github.com/ofiwg/libfabric.git
+	git clone https://github.com/ofiwg/libfabric.git
 	pushd libfabric
+	git checkout "${LIBFABRIC_VERSION}"
 	./autogen.sh
 	./configure --prefix=/opt/libfabric \
 	    --enable-rxm=yes \
