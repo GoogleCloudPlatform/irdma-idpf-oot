@@ -107,6 +107,6 @@ if ${BUILD_LIBFABRIC}; then
 	popd
 fi
 
-sudo modprobe rv
+sudo modprobe rv fr_page_list_len=256
 
 echo "Installation complete!"
