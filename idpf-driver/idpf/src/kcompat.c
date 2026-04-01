@@ -1387,6 +1387,7 @@ int __kc_pci_vfs_assigned(struct pci_dev __maybe_unused *dev)
 #endif /* CONFIG_PCI_IOV */
 #endif /* 3.10.0 */
 
+#ifndef pcie_link_speed
 static const unsigned char __maybe_unused pcie_link_speed[] = {
 	PCI_SPEED_UNKNOWN,      /* 0 */
 	PCIE_SPEED_2_5GT,       /* 1 */
@@ -1405,6 +1406,7 @@ static const unsigned char __maybe_unused pcie_link_speed[] = {
 	PCI_SPEED_UNKNOWN,      /* E */
 	PCI_SPEED_UNKNOWN       /* F */
 };
+#endif
 
 /*****************************************************************************/
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(3,12,0) )
