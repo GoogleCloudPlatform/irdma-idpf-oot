@@ -1,0 +1,44 @@
+From 778533a39e1252e71d7e2489fd42e9e7fa237510 Mon Sep 17 00:00:00 2001
+From: Jacob Moroni <jmoroni@google.com>
+Date: Thu, 18 Dec 2025 23:12:42 +0000
+Subject: [PATCH] irdma: Change default shared credits value to 64
+
+Changed the default value for IRDMA_UD_SHARED_CREDITS to 64. Also
+changed credit return to use a normal atomic store.
+
+Signed-off-by: Jacob Moroni <jmoroni@google.com>
+---
+ providers/irdma/umain.c | 9 +++------
+ 1 file changed, 3 insertions(+), 6 deletions(-)
+
+diff --git a/providers/irdma/umain.c b/providers/irdma/umain.c
+index e3b21ae5d..07bd52694 100644
+--- a/providers/irdma/umain.c
++++ b/providers/irdma/umain.c
+@@ -55,7 +55,7 @@ struct irdma_env_params env = {
+ 	.ud_qd_override = 0,
+ 	.transparent_ud_qd_override = 0,
+ 	.cq_size_override = 0,
+-	.shared_ud_credits = 0,
++	.shared_ud_credits = 64,
+ };
+ 
+ unsigned int irdma_dbg;
+@@ -249,12 +249,9 @@ int try_acquire_credit(uint32_t *cookie)
+ void release_credit(int index, uint32_t cookie)
+ {
+ 	struct shared_ud_shm *inst = g_shared_ud_shm;
++	atomic_store_explicit(&inst->acquire_time[index], 0,
++			      memory_order_relaxed);
+ 
+-	/* No need to check init because returning a credit implies it. */
+-	atomic_compare_exchange_strong_explicit(&inst->acquire_time[index],
+-						&cookie, 0,
+-						memory_order_relaxed,
+-						memory_order_relaxed);
+ }
+ 
+ /* Initialize the backpressure shared memory region for the first time. */
+-- 
+2.52.0.351.gbe84eed79e-goog
+
