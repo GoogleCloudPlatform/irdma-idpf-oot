@@ -5,6 +5,7 @@
 
 #define IRDMA_MAX_SAVED_PHY_PGADDR	4
 #define IRDMA_FLUSH_DELAY_MS		20
+#define IRDMA_PERIODIC_FLUSH_MS		2000
 
 #define IRDMA_PKEY_TBL_SZ		1
 #define IRDMA_DEFAULT_PKEY		0xFFFF
@@ -167,7 +168,6 @@ struct irdma_srq {
 	refcount_t refcnt;
 	spinlock_t lock; /* for poll srq */
 	struct irdma_pbl *iwpbl;
-	struct ib_sge *sg_list;
 	u16 srq_head;
 	u32 srq_num;
 	u32 max_wr;
@@ -177,21 +177,15 @@ struct irdma_srq {
 struct irdma_cq {
 	struct ib_cq ibcq;
 	struct irdma_sc_cq sc_cq;
-	u16 cq_head;
-	u16 cq_size;
-	u16 cq_num;
+	u32 cq_num;
 	bool user_mode;
 	atomic_t armed;
 	enum irdma_cmpl_notify last_notify;
-	u32 polled_cmpls;
-	u32 cq_mem_size;
 	struct irdma_dma_mem kmem;
 	struct irdma_dma_mem kmem_shadow;
 	struct completion free_cq;
 	refcount_t refcnt;
 	spinlock_t lock; /* for poll cq */
-	struct irdma_pbl *iwpbl;
-	struct irdma_pbl *iwpbl_shadow;
 	struct list_head resize_list;
 	struct irdma_cq_poll_info cur_cqe;
 	struct list_head cmpl_generated;
@@ -295,6 +289,13 @@ struct irdma_qp {
 	bool suspend_pending:1;
 };
 
+struct irdma_mmap_info {
+	struct ib_ucontext *context;
+	struct kref ref;
+	void *buf;
+	size_t size;
+};
+
 enum irdma_mmap_flag {
 	IRDMA_MMAP_IO_NC,
 	IRDMA_MMAP_IO_WC,
@@ -311,6 +312,55 @@ struct irdma_user_mmap_entry {
 	u64 bar_offset;
 	u8 mmap_flag;
 };
+
+#define CRT_RDMA_HEADER 256
+
+/* Adding CRT specific extensions for CRT protocol family.
+ **/
+enum crt_mtu {
+	CRT_MTU_256  = 1,
+	CRT_MTU_512  = 2,
+	CRT_MTU_1024 = 3,
+	CRT_MTU_2048 = 4,
+	CRT_MTU_4096 = 5,
+	CRT_MTU_8192 = 6
+};
+
+static inline int crt_mtu_enum_to_int(enum crt_mtu mtu)
+{
+	switch (mtu) {
+	case CRT_MTU_256:  return  256;
+	case CRT_MTU_512:  return  512;
+	case CRT_MTU_1024: return 1024;
+	case CRT_MTU_2048: return 2048;
+	case CRT_MTU_4096: return 4096;
+	case CRT_MTU_8192: return 8192;
+	default:	   return -1;
+	}
+}
+
+static inline enum crt_mtu crt_iboe_get_mtu(int mtu)
+{
+	/*
+	 * Reduce Falcon headers from effective MTU.
+	 **/
+	mtu = mtu - CRT_RDMA_HEADER;
+
+	if (mtu >= crt_mtu_enum_to_int(CRT_MTU_8192))
+		return CRT_MTU_8192;
+	else if (mtu >= crt_mtu_enum_to_int(CRT_MTU_4096))
+		return CRT_MTU_4096;
+	else if (mtu >= crt_mtu_enum_to_int(CRT_MTU_2048))
+		return CRT_MTU_2048;
+	else if (mtu >= crt_mtu_enum_to_int(CRT_MTU_1024))
+		return CRT_MTU_1024;
+	else if (mtu >= crt_mtu_enum_to_int(CRT_MTU_512))
+		return CRT_MTU_512;
+	else if (mtu >= crt_mtu_enum_to_int(CRT_MTU_256))
+		return CRT_MTU_256;
+	else
+		return 0;
+}
 
 static inline u16 irdma_fw_major_ver(struct irdma_sc_dev *dev)
 {
@@ -460,7 +510,8 @@ void irdma_generate_flush_completions(struct irdma_qp *iwqp);
 void irdma_remove_cmpls_list(struct irdma_cq *iwcq);
 int irdma_generated_cmpls(struct irdma_cq *iwcq, struct irdma_cq_poll_info *cq_poll_info);
 void irdma_sched_qp_flush_work(struct irdma_qp *iwqp);
-void irdma_flush_worker(struct work_struct *work);
+void irdma_kern_flush_worker(struct work_struct *work);
+void irdma_user_flush_worker(struct work_struct *work);
 struct ib_mr *wa_reg_phys_mr(struct ib_pd *pd);
 int irdma_hw_alloc_mw(struct irdma_device *iwdev, struct irdma_mr *iwmr);
 #endif /* IRDMA_VERBS_H */

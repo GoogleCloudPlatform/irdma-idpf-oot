@@ -1,4 +1,4 @@
- /* SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB-only */
+/* SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB-only */
 /* Copyright (C) 2013-2025 Intel Corporation */
 
 #ifndef _I40E_CLIENT_H_

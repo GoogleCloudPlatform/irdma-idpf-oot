@@ -520,16 +520,18 @@ static void dump_qp(struct irdma_pci_f *rf, u32 qp_id, u32 subtype)
 {
 	struct irdma_qp *iwqp = NULL;
 
-	if ((qp_id >= 2) && (qp_id < rf->max_qp))
-		iwqp = rf->qp_table[qp_id];
+	if (subtype != QP_CHIP_RAW) {
+		if ((qp_id >= 2) && (qp_id < rf->max_qp))
+			iwqp = rf->qp_table[qp_id];
 
-	if (!iwqp) {
-		dbg_vsnprintf("QP %d is not valid\n", qp_id);
-		return;
+		if (!iwqp) {
+			dbg_vsnprintf("QP %d is not valid\n", qp_id);
+			return;
+		}
+
+		dbg_vsnprintf("QP %d ibqp_state=0x%x warp_state=0x%x\n", qp_id,
+			      iwqp->ibqp_state, iwqp->iwarp_state);
 	}
-
-	dbg_vsnprintf("QP %d ibqp_state=0x%x warp_state=0x%x\n", qp_id,
-		      iwqp->ibqp_state, iwqp->iwarp_state);
 
 	switch (subtype) {
 	case QP_INFO:
@@ -539,13 +541,13 @@ static void dump_qp(struct irdma_pci_f *rf, u32 qp_id, u32 subtype)
 		dbg_vsnprintf
 		    ("QP %d context will be dumped to /var/log/messages\n",
 		     qp_id);
-		irdma_upload_qp_context(iwqp, 0, 0);
+		irdma_upload_qp_context(rf, qp_id, iwqp->sc_qp.qp_uk.qp_type, 0, 0);
 		break;
 	case QP_CHIP_RAW:
 		dbg_vsnprintf
-		    ("QP %d context will be dumped using regs (no CQP ops) to /var/log/messages\n",
+		    ("QP %d context will be dumped to dmesg\n",
 		     qp_id);
-		irdma_upload_qp_context(iwqp, 0, 1);
+		irdma_upload_qp_context(rf, qp_id, 0, 0, 1);
 		break;
 	case QP_ACTIVE:
 		if (!iwqp->user_mode) {
@@ -880,13 +882,22 @@ static void dump_stats_cmd(struct irdma_device *iwdev)
 		      iwdev->ah_list_cnt);
 	dbg_vsnprintf("AH list cnt HWM                  %d\n",
 		      iwdev->ah_list_hwm);
-	dbg_vsnprintf("AH Reused Count(Kernel)            %lld\n",
-		      iwdev->ah_kernel_reused);
-	dbg_vsnprintf("AH Current List Count(Kernel)      %d\n",
-		      iwdev->ah_kernel_list_cnt);
-	dbg_vsnprintf("AH list cnt HWM(Kernel)            %d\n",
-		      iwdev->ah_kernel_list_hwm);
-
+	dbg_vsnprintf("AH Reused Count(nosleep)            %lld\n",
+		      iwdev->ah_nosleep_reused);
+	dbg_vsnprintf("AH Current List Count(nosleep)      %d\n",
+		      iwdev->ah_nosleep_list_cnt);
+	dbg_vsnprintf("AH list cnt HWM(nosleep)            %d\n",
+		      iwdev->ah_nosleep_list_hwm);
+	dbg_vsnprintf("MAD QP Posted Send WRs           %lld\n",
+		      iwdev->mad_qp_posted_send_wrs);
+	dbg_vsnprintf("MAD QP Completed Send WRs        %lld\n",
+		      iwdev->mad_qp_completed_send_wrs);
+	dbg_vsnprintf("MAD QP Posted Recv WRs           %lld\n",
+		      iwdev->mad_qp_posted_recv_wrs);
+	dbg_vsnprintf("MAD QP Completed Recv WRs        %lld\n",
+		      iwdev->mad_qp_completed_recv_wrs);
+	dbg_vsnprintf("MAD QP Completed Error WRs       %lld\n",
+		      iwdev->mad_qp_completed_error_wrs);
 #if IS_ENABLED(CONFIG_CONFIGFS_FS)
 	if  (iwdev->roce_mode) {
 		dbg_vsnprintf("roce rtomin  = %d\n", iwdev->roce_rtomin);

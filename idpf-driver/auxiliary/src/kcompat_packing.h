@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2019-2025 Intel Corporation */
+/* Copyright (C) 2019-2026 Intel Corporation */
 
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright 2016-2018 NXP
@@ -429,8 +429,7 @@ void unpack_fields_u16(const void *pbuf, size_t pbuflen, void *ustruct,
 	__builtin_choose_expr(ARRAY_SIZE(fields) == 48, ({ CHECK_PACKED_FIELDS_48(fields); }), \
 	__builtin_choose_expr(ARRAY_SIZE(fields) == 49, ({ CHECK_PACKED_FIELDS_49(fields); }), \
 	__builtin_choose_expr(ARRAY_SIZE(fields) == 50, ({ CHECK_PACKED_FIELDS_50(fields); }), \
-	({ BUILD_BUG_ON_MSG(1, "CHECK_PACKED_FIELDS() must be regenerated to support array sizes larger than 50."); }) \
-))))))))))))))))))))))))))))))))))))))))))))))))))
+	({ BUILD_BUG_ON_MSG(1, "CHECK_PACKED_FIELDS() must be regenerated to support array sizes larger than 50."); }) \))))))))))))))))))))))))))))))))))))))))))))))))))
 
 /* End of generated content */
 
@@ -438,30 +437,30 @@ void unpack_fields_u16(const void *pbuf, size_t pbuflen, void *ustruct,
 	({ \
 		CHECK_PACKED_FIELDS(fields); \
 		CHECK_PACKED_FIELDS_SIZE((fields), (pbuflen)); \
-		__builtin_choose_expr(__builtin_types_compatible_p(typeof(fields), const struct packed_field_u8 *), \
+		__builtin_choose_expr(__builtin_types_compatible_p(typeof(*fields), struct packed_field_u8), \
 				      pack_fields_u8((pbuf), (pbuflen), (ustruct), \
 						     (const struct packed_field_u8 *)(fields), \
 						     ARRAY_SIZE(fields), (quirks)), \
-		__builtin_choose_expr(__builtin_types_compatible_p(typeof(fields), const struct packed_field_u16 *), \
+		__builtin_choose_expr(__builtin_types_compatible_p(typeof(*fields), struct packed_field_u16), \
 				      pack_fields_u16((pbuf), (pbuflen), (ustruct), \
 						      (const struct packed_field_u16 *)(fields), \
 						      ARRAY_SIZE(fields), (quirks)), \
-		(void)0)); \
+		({ BUILD_BUG_ON_MSG(1, "pack_fields called with an unrecognized fields array type."); (void)0; }))); \
 	})
 
 #define unpack_fields(pbuf, pbuflen, ustruct, fields, quirks) \
 	({ \
 		CHECK_PACKED_FIELDS(fields); \
 		CHECK_PACKED_FIELDS_SIZE((fields), (pbuflen)); \
-		__builtin_choose_expr(__builtin_types_compatible_p(typeof(fields), const struct packed_field_u8 *), \
+		__builtin_choose_expr(__builtin_types_compatible_p(typeof(*fields), struct packed_field_u8), \
 				      unpack_fields_u8((pbuf), (pbuflen), (ustruct), \
 						       (const struct packed_field_u8 *)(fields), \
 						       ARRAY_SIZE(fields), (quirks)), \
-		__builtin_choose_expr(__builtin_types_compatible_p(typeof(fields), const struct packed_field_u16 *), \
+		__builtin_choose_expr(__builtin_types_compatible_p(typeof(*fields), struct packed_field_u16), \
 				      unpack_fields_u16((pbuf), (pbuflen), (ustruct), \
 							(const struct packed_field_u16 *)(fields), \
 							ARRAY_SIZE(fields), (quirks)), \
-		(void)0)); \
+		({ BUILD_BUG_ON_MSG(1, "unpack_fields called with an unrecognized fields array type."); (void)0; }))); \
 	})
 
 #endif

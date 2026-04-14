@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB
-/* Copyright (c) 2015 - 2024 Intel Corporation */
+/* Copyright (c) 2015 - 2025 Intel Corporation */
 #include "main.h"
 #include "trace.h"
 
@@ -1263,7 +1263,8 @@ static void irdma_cm_timer_tick(struct timer_list *t)
 	struct irdma_timer_entry *send_entry, *close_entry;
 	struct list_head *list_core_temp;
 	struct list_head *list_node;
-	struct irdma_cm_core *cm_core = from_timer(cm_core, t, tcp_timer);
+	struct irdma_cm_core *cm_core =
+		timer_container_of(cm_core, t, tcp_timer);
 	struct irdma_sc_vsi *vsi;
 	u32 settimer = 0;
 	unsigned long timetosend;
@@ -1339,10 +1340,9 @@ static void irdma_cm_timer_tick(struct timer_list *t)
 		spin_lock_irqsave(&cm_node->retrans_list_lock, flags);
 		if (send_entry->send_retrans) {
 			send_entry->retranscount--;
-			timetosend = (IRDMA_RETRY_TIMEOUT <<
-				      (IRDMA_DEFAULT_RETRANS -
-				       send_entry->retranscount));
-
+			timetosend = IRDMA_RETRY_TIMEOUT <<
+				     min(IRDMA_DEFAULT_RETRANS -
+					 send_entry->retranscount, (u32)4);
 			send_entry->timetosend = jiffies +
 			    min(timetosend, IRDMA_MAX_TIMEOUT);
 			if (nexttimeout > send_entry->timetosend || !settimer) {
@@ -2246,11 +2246,12 @@ irdma_make_cm_node(struct irdma_cm_core *cm_core, struct irdma_device *iwdev,
 	int oldarpindex;
 	int arpindex;
 	struct net_device *netdev = iwdev->netdev;
+	int ret;
 
 	/* create an hte and cm_node for this instance */
 	cm_node = kzalloc(sizeof(*cm_node), GFP_ATOMIC);
 	if (!cm_node)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
 	/* set our node specific transport info */
 	cm_node->ipv4 = cm_info->ipv4;
@@ -2331,8 +2332,10 @@ irdma_make_cm_node(struct irdma_cm_core *cm_core, struct irdma_device *iwdev,
 		else
 			arpindex = -EINVAL;
 	}
-	if (arpindex < 0)
+	if (arpindex < 0) {
+		ret = -EINVAL;
 		goto err;
+	}
 
 	ether_addr_copy(cm_node->rem_mac,
 			iwdev->rf->arp_table[arpindex].mac_addr);
@@ -2343,7 +2346,7 @@ irdma_make_cm_node(struct irdma_cm_core *cm_core, struct irdma_device *iwdev,
 err:
 	kfree(cm_node);
 
-	return NULL;
+	return ERR_PTR(ret);
 }
 
 static void irdma_destroy_connection(struct irdma_cm_node *cm_node)
@@ -3003,8 +3006,8 @@ static int irdma_create_cm_node(struct irdma_cm_core *cm_core,
 
 	/* create a CM connection node */
 	cm_node = irdma_make_cm_node(cm_core, iwdev, cm_info, NULL);
-	if (!cm_node)
-		return -ENOMEM;
+	if (IS_ERR(cm_node))
+		return PTR_ERR(cm_node);
 
 	/* set our node side to client (active) side */
 	cm_node->tcp_cntxt.client = 1;
@@ -3201,9 +3204,9 @@ void irdma_receive_ilq(struct irdma_sc_vsi *vsi, struct irdma_puda_buf *rbuf)
 		cm_info.cm_id = listener->cm_id;
 		cm_node = irdma_make_cm_node(cm_core, iwdev, &cm_info,
 					     listener);
-		if (!cm_node) {
+		if (IS_ERR(cm_node)) {
 			ibdev_dbg(&cm_core->iwdev->ibdev,
-				  "CM: allocate node failed\n");
+				  "CM: allocate node failed ret=%ld\n", PTR_ERR(cm_node));
 			refcount_dec(&listener->refcnt);
 			return;
 		}
@@ -3286,7 +3289,11 @@ void irdma_cleanup_cm_core(struct irdma_cm_core *cm_core)
 	if (!cm_core)
 		return;
 
+#ifdef HAVE_TIMER_DELETE
+	timer_delete_sync(&cm_core->tcp_timer);
+#else
 	del_timer_sync(&cm_core->tcp_timer);
+#endif /* HAVE_TIMER_DELETE */
 
 	destroy_workqueue(cm_core->event_wq);
 	cm_core->dev->ws_reset(&cm_core->iwdev->vsi);
@@ -4347,21 +4354,21 @@ static void irdma_cm_event_handler(struct work_struct *work)
 		irdma_cm_event_reset(event);
 		break;
 	case IRDMA_CM_EVENT_CONNECTED:
-		if (!event->cm_node->cm_id ||
-		    event->cm_node->state != IRDMA_CM_STATE_OFFLOADED)
+		if (!cm_node->cm_id ||
+		    cm_node->state != IRDMA_CM_STATE_OFFLOADED)
 			break;
 		irdma_cm_event_connected(event);
 		break;
 	case IRDMA_CM_EVENT_MPA_REJECT:
-		if (!event->cm_node->cm_id ||
+		if (!cm_node->cm_id ||
 		    cm_node->state == IRDMA_CM_STATE_OFFLOADED)
 			break;
 		irdma_send_cm_event(cm_node, cm_node->cm_id,
 				    IW_CM_EVENT_CONNECT_REPLY, -ECONNREFUSED);
 		break;
 	case IRDMA_CM_EVENT_ABORTED:
-		if (!event->cm_node->cm_id ||
-		    event->cm_node->state == IRDMA_CM_STATE_OFFLOADED)
+		if (!cm_node->cm_id ||
+		    cm_node->state == IRDMA_CM_STATE_OFFLOADED)
 			break;
 		irdma_event_connect_error(event);
 		break;
@@ -4371,7 +4378,7 @@ static void irdma_cm_event_handler(struct work_struct *work)
 		break;
 	}
 
-	irdma_rem_ref_cm_node(event->cm_node);
+	irdma_rem_ref_cm_node(cm_node);
 	kfree(event);
 }
 

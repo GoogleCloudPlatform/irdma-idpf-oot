@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2019-2025 Intel Corporation */
+/* Copyright (C) 2019-2026 Intel Corporation */
 
 #include "idpf.h"
 #include "idpf_lan_pf_regs.h"
+#include "idpf_virtchnl.h"
+#include "idpf_ptp.h"
 
 /* LAN driver does not own all the BAR0 address space. This results in 2 BAR0
  * regions for PF device and the driver should map each region separately.
@@ -21,7 +23,7 @@
 
 /**
  * idpf_ctlq_reg_init - initialize default mailbox registers
- * @hw: pointer to hw struct
+ * @hw: pointer to the hardware structure
  * @cq: pointer to the array of create control queues
  */
 static void idpf_ctlq_reg_init(struct idpf_hw *hw,
@@ -117,10 +119,10 @@ static int idpf_intr_reg_init(struct idpf_vport *vport,
 		intr->dyn_ctl_itridx_s = PF_GLINT_DYN_CTL_ITR_INDX_S;
 		intr->dyn_ctl_intrvl_s = PF_GLINT_DYN_CTL_INTERVAL_S;
 		intr->dyn_ctl_wb_on_itr_m = PF_GLINT_DYN_CTL_WB_ON_ITR_M;
-		intr->dyn_ctl_swint_trig_m = PF_GLINT_DYN_CTL_SWINT_TRIG_M;
 		intr->dyn_ctl_itridx_m = PF_GLINT_DYN_CTL_ITR_INDX_M;
+		intr->dyn_ctl_swint_trig_m = PF_GLINT_DYN_CTL_SWINT_TRIG_M;
 		intr->dyn_ctl_sw_itridx_ena_m =
-					PF_GLINT_DYN_CTL_SW_ITR_INDX_ENA_M;
+			PF_GLINT_DYN_CTL_SW_ITR_INDX_ENA_M;
 
 		spacing = IDPF_ITR_IDX_SPACING(reg_vals[vec_id].itrn_index_spacing,
 					       IDPF_PF_ITR_IDX_SPACING);
@@ -197,10 +199,10 @@ static u64 idpf_read_master_time_ns(const struct idpf_hw *hw)
  *
  * Set the bits required for enabling shtime and cmd execution
  */
-static void idpf_ptp_reg_init(struct idpf_adapter *adapter)
+static void idpf_ptp_reg_init(const struct idpf_adapter *adapter)
 {
-	adapter->ptp.cmd.shtime_enable_mask = PF_GLTSYN_CMD_SYNC_SHTIME_EN_M;
-	adapter->ptp.cmd.exec_cmd_mask = PF_GLTSYN_CMD_SYNC_EXEC_CMD_M;
+	adapter->ptp->cmd.shtime_enable_mask = PF_GLTSYN_CMD_SYNC_SHTIME_EN_M;
+	adapter->ptp->cmd.exec_cmd_mask = PF_GLTSYN_CMD_SYNC_EXEC_CMD_M;
 }
 
 /**

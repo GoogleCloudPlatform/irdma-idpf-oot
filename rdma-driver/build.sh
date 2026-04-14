@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB
 #!/bin/bash
-# Copyright (c) 2015 - 2023 Intel Corporation
+# Copyright (c) 2015 - 2025 Intel Corporation
 
 print_usage() {
 	echo
@@ -64,6 +64,14 @@ if [ -z "$KSRC" ]; then
 			KSRC="/lib/modules/$BUILD_KERNEL/build/"
 		fi
 	fi
+
+	if [ -z "$KSRC" ]; then
+		echo "Invalid kernel src. Expected: ${BUILD_KERNEL}"
+		KSOURCES=`ls -w 1 /usr/src/kernels/ ; ls -w 1 /lib/modules/`
+		echo "Found: ${KSOURCES}"
+		exit 1
+	fi
+
 	export KSRC
 else
 	if [ -z "$BUILD_KERNEL" ]; then
@@ -94,6 +102,15 @@ else
 	fi
 fi
 
+if [ -n "$SYSROOT" ]; then
+	MODDIR=$SYSROOT/lib/modules/$BUILD_KERNEL
+else
+	MODDIR=/lib/modules/$BUILD_KERNEL
+fi
+
+echo "BUILD_KERNEL: $BUILD_KERNEL"
+echo "MODDIR: $MODDIR"
+
 if [ -e ${KSRC}/include/linux/kconfig.h ]; then
 	INCLUDE_KCONF_HDR="-include ${KSRC}/include/linux/kconfig.h"
 	export INCLUDE_KCONF_HDR
@@ -119,6 +136,7 @@ NO_INSTALL=0
 CHECK=0
 CHECK_FLAGS=
 EXTRA_INCS=
+ARM_OPTS=
 
 for arg in "$@"; do
 	if [ "$arg" == "ofed" ]; then
@@ -182,18 +200,18 @@ if [ $CHECK -eq 1 ]; then
 	fi
 fi
 
-if [ -e "/lib/modules/$BUILD_KERNEL/extern-symvers/intel_auxiliary.symvers" -a \
-     -e "/lib/modules/$BUILD_KERNEL/extern-symvers/auxiliary.symvers" ]; then
+if [ -e "$MODDIR/extern-symvers/intel_auxiliary.symvers" -a \
+     -e "$MODDIR/extern-symvers/auxiliary.symvers" ]; then
 	echo "WARNING: Two incompatible auxiliary bus drivers installed"
 	echo "The irdma driver may not load or may not operate properly"
-	ls /lib/modules/$BUILD_KERNEL/extern-symvers/*
+	ls $MODDIR/extern-symvers/*
 fi
 
-if [ -e "/lib/modules/$BUILD_KERNEL/extern-symvers/intel_auxiliary.symvers" ]; then
-	KBUILD_EXTRA_SYMBOLS="/lib/modules/$BUILD_KERNEL/extern-symvers/intel_auxiliary.symvers"
+if [ -e "$MODDIR/extern-symvers/intel_auxiliary.symvers" ]; then
+	KBUILD_EXTRA_SYMBOLS="$MODDIR/extern-symvers/intel_auxiliary.symvers"
 	export KBUILD_EXTRA_SYMBOLS
-elif [ -e "/lib/modules/$BUILD_KERNEL/extern-symvers/auxiliary.symvers" ]; then
-	KBUILD_EXTRA_SYMBOLS="/lib/modules/$BUILD_KERNEL/extern-symvers/auxiliary.symvers"
+elif [ -e "$MODDIR/extern-symvers/auxiliary.symvers" ]; then
+	KBUILD_EXTRA_SYMBOLS="$MODDIR/extern-symvers/auxiliary.symvers"
 	export KBUILD_EXTRA_SYMBOLS
 fi
 
@@ -226,13 +244,19 @@ if [ "$USE_OFED" == "1" ]; then
 	# WA required to build RHEL OFED using gcc >= 5.x
 	# - silence certain compilation warnings (for RHEL 7.4-7.6)
 	KCFLAGS="-Wno-attributes -Wno-address-of-packed-member -Wno-missing-attributes "
-	# - make the compiler pretend to be gcc 4.x (for RHEL 7.2)
-	KCFLAGS+="-U__GNUC__ -D__GNUC__=4 "
+	# - make the compiler pretend to be gcc 4.0.x (for RHEL 7.x)
+	KCFLAGS+="-U__GNUC__ -D__GNUC__=4 -U__GNUC_MINOR__ -D__GNUC_MINOR__=0 "
 	# WA to prevent including content of kcompat_generated_defs.h
 	# from LAN or auxiliary_bus driver, as some macros defined there
 	# may be in conflict in those defined in OFEDs compat.h.
 	KCFLAGS+="-D_KCOMPAT_GENERATED_DEFS_H_ "
+	# WA for warnings/errors when using gcc >= 14.x.
+	KCFLAGS+="-Wno-address-of-packed-member -Wno-dangling-pointer -Wno-maybe-uninitialized "
+	# WA for warnings/errors when using gcc >= 14.x (for RHEL 7.2 and/or
+	# for old Linux kernels that do not specify C dialect in root Makefile.
+	KCFLAGS+="-std=gnu99 "
 	export KCFLAGS
+	echo "KCFLAGS=$KCFLAGS"
 
 	if [ ${OFED_VERSION_CODE} == $(( (4 << 16) + (8 << 8) )) ]; then
 		make "CFLAGS_MODULE=-DMODULE -DSLE_LOCALVERSION_CODE=${SLE_LOCALVERSION_CODE} -D__OFED_4_8__ -DOFED_VERSION_CODE=${OFED_VERSION_CODE} ${EXTRA_INCS}" -j$nproc -C $KSRC M=$PWD/src/irdma W=1 C=$CHECK CF="$CHECK_FLAGS"
@@ -240,7 +264,19 @@ if [ "$USE_OFED" == "1" ]; then
 		make "CFLAGS_MODULE=-DMODULE -DSLE_LOCALVERSION_CODE=${SLE_LOCALVERSION_CODE} -D__OFED_BUILD__ -DOFED_VERSION_CODE=${OFED_VERSION_CODE} ${EXTRA_INCS}" -j$nproc -C $KSRC M=$PWD/src/irdma W=1 C=$CHECK CF="$CHECK_FLAGS"
 	fi
 else
-	make "CFLAGS_MODULE=-DMODULE -DSLE_LOCALVERSION_CODE=${SLE_LOCALVERSION_CODE} -DOFED_VERSION_CODE=${OFED_VERSION_CODE} ${EXTRA_INCS}" -j$nproc -C $KSRC M=$PWD/src/irdma W=1 C=$CHECK CF="$CHECK_FLAGS"
+	# WA for missing perl modules in ACC SDK (errors in kernel-doc script)
+	# WA for errors reported by sparse when building for ARM
+	if [ "$ARCH" == "arm64" ]; then
+		ARM_OPTS="KBUILD_EXTRA_WARN="
+		CHECK=0
+	fi
+
+	# WA for warnings/errors when using gcc >= 15.x
+	KCFLAGS="-Wno-address-of-packed-member -Wno-dangling-pointer -Wno-missing-attributes -Wno-maybe-uninitialized "
+	export KCFLAGS
+	echo "KCFLAGS=$KCFLAGS"
+
+	make "CFLAGS_MODULE=-DMODULE -DSLE_LOCALVERSION_CODE=${SLE_LOCALVERSION_CODE} -DOFED_VERSION_CODE=${OFED_VERSION_CODE} ${EXTRA_INCS}" -j$nproc -C $KSRC M=$PWD/src/irdma W=1 C=$CHECK CF="$CHECK_FLAGS" $ARM_OPTS
 fi
 
 if [ $? -eq 0 ]; then

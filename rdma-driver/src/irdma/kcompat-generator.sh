@@ -228,6 +228,7 @@ function gen-rdma() {
 	gen HAVE_IB_UMEM_SG_HEAD if struct ib_umem matches sg_head in "$um"
 	gen NEED_RDMA_UMEM_BLOCK_ITER_NEXT if fun __rdma_umem_block_iter_next absent in "$um"
 	gen HAVE_IB_UMEM_NUM_DMA_BLOCKS if fun ib_umem_num_dma_blocks in "$um"
+	gen NEED_IRQ_UPDATE_AFFINITY_HINT if fun irq_update_affinity_hint absent in include/linux/interrupt.h
 }
 
 # all the generations, extracted from main() to keep normal code and various

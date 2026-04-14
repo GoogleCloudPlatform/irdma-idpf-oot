@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB */
-/* Copyright (c) 2020 - 2023 Intel Corporation */
+/* Copyright (c) 2020 - 2025 Intel Corporation */
 #ifndef OFED_KCOMPAT_H
 #define OFED_KCOMPAT_H
 
@@ -105,6 +105,7 @@ enum ib_port_phys_state {
 #define QUERY_GID_ROCE_V1
 #define QUERY_PKEY_V1
 #define QUERY_PORT_V1
+#define REG_USER_MR_VER_1
 #define REREG_MR_VER_1
 #define ROCE_PORT_IMMUTABLE_V1
 #define SET_BEST_PAGE_SZ_V1
@@ -200,6 +201,7 @@ int irdma_del_gid(struct ib_device *device,
 #define QUERY_GID_ROCE_V1
 #define QUERY_PKEY_V1
 #define QUERY_PORT_V1
+#define REG_USER_MR_VER_1
 #define REREG_MR_VER_1
 #define ROCE_PORT_IMMUTABLE_V1
 #define SET_BEST_PAGE_SZ_V1
@@ -319,6 +321,7 @@ int irdma_del_gid(struct ib_device *device,
 #define QUERY_GID_ROCE_V1
 #define QUERY_PKEY_V1
 #define QUERY_PORT_V1
+#define REG_USER_MR_VER_1
 #define REREG_MR_VER_1
 #define ROCE_PORT_IMMUTABLE_V1
 #define SET_BEST_PAGE_SZ_V1

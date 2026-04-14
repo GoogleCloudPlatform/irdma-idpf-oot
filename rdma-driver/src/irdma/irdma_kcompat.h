@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB */
-/* Copyright (c) 2018 - 2024 Intel Corporation */
+/* Copyright (c) 2018 - 2025 Intel Corporation */
 #ifndef IRDMA_KCOMPAT_H
 #define IRDMA_KCOMPAT_H
 
@@ -46,6 +46,7 @@
 #include <linux/io-64-nonatomic-lo-hi.h>
 #endif
 
+#include "irdma-abi.h"
 #if !defined(__OFED_BUILD__) && !defined(__OFED_4_8__)
 #include "irdma_kcompat_gen.h"
 #endif
@@ -73,6 +74,11 @@
 #define IB_QP_ATTR_STANDARD_BITS GENMASK(20, 0)
 #endif
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 16, 0))
+#define timer_container_of(var, callback_timer, timer_fieldname) \
+	container_of(callback_timer, typeof(*var), timer_fieldname)
+#endif /* (LINUX_VERSION_CODE < KERNEL_VERSION(6, 16, 0)) */
+
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0))
 #define ENABLE_DUP_CM_NAME_WA
 #endif /* (LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)) */
@@ -97,9 +103,6 @@
 #define timer_setup(timer, callback, flags)				\
 	__setup_timer((timer), (TIMER_FUNC_TYPE)(callback),		\
 		      (TIMER_DATA_TYPE)(timer), (flags))
-
-#define from_timer(var, callback_timer, timer_fieldname) \
-	container_of(callback_timer, typeof(*var), timer_fieldname)
 #endif /* (LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)) */
 
 #if !defined(__OFED_BUILD__) && !defined(__OFED_4_8__)
@@ -234,7 +237,7 @@ int irdma_create_ah(struct ib_ah *ibah,
 		    struct ib_udata *udata);
 #endif
 
-#ifdef CREATE_AH_VER_4
+#if defined(CREATE_AH_VER_1_2) || defined(CREATE_AH_VER_4)
 struct ib_ah *irdma_create_ah(struct ib_pd *ibpd,
 			      struct rdma_ah_attr *attr,
 			      struct ib_udata *udata);
@@ -260,9 +263,6 @@ struct ib_ah *irdma_create_ah(struct ib_pd *ibpd,
 void irdma_ether_copy(u8 *dmac, struct ib_ah_attr *attr);
 #endif
 #if defined(CREATE_AH_VER_1_2)
-struct ib_ah *irdma_create_ah(struct ib_pd *ibpd,
-			      struct rdma_ah_attr *attr,
-			      struct ib_udata *udata);
 void irdma_ether_copy(u8 *dmac, struct rdma_ah_attr *attr);
 #endif
 
@@ -497,14 +497,32 @@ int irdma_hwdereg_mr(struct ib_mr *ib_mr);
 int irdma_rereg_user_mr(struct ib_mr *ib_mr, int flags, u64 start, u64 len,
 			u64 virt, int new_access, struct ib_pd *new_pd,
 			struct ib_udata *udata);
-
 #endif
 #ifdef REREG_MR_VER_2
 struct ib_mr *irdma_rereg_user_mr(struct ib_mr *ib_mr, int flags, u64 start,
 				  u64 len, u64 virt, int new_access,
 				  struct ib_pd *new_pd,
 				  struct ib_udata *udata);
-
+#endif
+int irdma_reg_user_mr_type_qp(struct irdma_mem_reg_req req,
+			      struct ib_udata *udata,
+			      struct irdma_mr *iwmr);
+int irdma_reg_user_mr_type_cq(struct irdma_mem_reg_req req,
+			      struct ib_udata *udata,
+			      struct irdma_mr *iwmr);
+int irdma_reg_user_mr_type_srq(struct irdma_mem_reg_req req,
+			       struct ib_udata *udata,
+			       struct irdma_mr *iwmr);
+#ifdef REG_USER_MR_VER_1
+struct ib_mr *irdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 len,
+				u64 virt, int access,
+				struct ib_udata *udata);
+#endif
+#ifdef REG_USER_MR_VER_2
+struct ib_mr *irdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 len,
+				u64 virt, int access,
+				struct ib_dmah *dmah,
+				struct ib_udata *udata);
 #endif
 #ifdef SET_DMABUF
 #ifdef REG_USER_MR_DMABUF_VER_1
@@ -517,6 +535,11 @@ struct ib_mr *irdma_reg_user_mr_dmabuf(struct ib_pd *pd, u64 start, u64 len,
 				       u64 virt, int fd, int access,
 				       struct uverbs_attr_bundle *attrs);
 
+#elif defined(REG_USER_MR_DMABUF_VER_3)
+struct ib_mr *irdma_reg_user_mr_dmabuf(struct ib_pd *pd, u64 start, u64 len,
+				       u64 virt, int fd, int access,
+				       struct ib_dmah *dmah,
+				       struct uverbs_attr_bundle *attrs);
 #endif
 #endif /* SET_DMABUF */
 int irdma_hwreg_mr(struct irdma_device *iwdev, struct irdma_mr *iwmr,
@@ -836,7 +859,7 @@ static inline void ida_free(struct ida *ida, unsigned int id)
 }
 #endif /* NEED_IDA_ALLOC_MIN_MAX_RANGE_FREE */
 #ifdef IB_GET_ETH_SPEED
-int ib_get_eth_speed(struct ib_device *dev, u32 port_num, u8 *speed, u8 *width);
+int ib_get_eth_speed(struct ib_device *dev, u32 port_num, u16 *speed, u8 *width);
 #endif
 #ifdef IRDMA_IRQ_UPDATE_AFFINITY
 /**

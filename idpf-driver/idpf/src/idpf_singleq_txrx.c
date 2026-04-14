@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2019-2025 Intel Corporation */
+/* Copyright (C) 2019-2026 Intel Corporation */
 
 #include "kcompat.h"
 #include <linux/prefetch.h>
@@ -11,9 +11,8 @@
  * @skb: pointer to skb
  * @off: pointer to struct that holds offload parameters
  *
- * Returns negative on error, 0 otherwise. If tx checksum offload can be
- * enabled, the offload params will be set accordingly. If tx checksum offload
- * cannot be enabled, the checksum related fields in offload params will be 0.
+ * Returns 0 or error (negative) if checksum offload cannot be executed, 1
+ * otherwise.
  */
 static int idpf_tx_singleq_csum(struct sk_buff *skb,
 				struct idpf_tx_offload_params *off)
@@ -43,101 +42,6 @@ static int idpf_tx_singleq_csum(struct sk_buff *skb,
 	l2_len = ip.hdr - skb->data;
 	offset = FIELD_PREP(0x3F << IDPF_TX_DESC_LEN_MACLEN_S, l2_len / 2);
 	is_tso = off->tx_flags & IDPF_TX_FLAGS_TSO;
-#ifdef HAVE_ENCAP_CSUM_OFFLOAD
-	if (skb->encapsulation) {
-		u32 tunnel = 0;
-
-		/* define outer network header type */
-		if (off->tx_flags & IDPF_TX_FLAGS_IPV4) {
-			/* The stack computes the IP header already, the only
-			 * time we need the hardware to recompute it is in the
-			 * case of TSO.
-			 */
-			tunnel |= is_tso ?
-				  IDPF_TX_CTX_EXT_IP_IPV4 :
-				  IDPF_TX_CTX_EXT_IP_IPV4_NO_CSUM;
-
-			l4_proto = ip.v4->protocol;
-		} else if (off->tx_flags & IDPF_TX_FLAGS_IPV6) {
-			tunnel |= IDPF_TX_CTX_EXT_IP_IPV6;
-
-			l4_proto = ip.v6->nexthdr;
-			if (ipv6_ext_hdr(l4_proto))
-				ipv6_skip_exthdr(skb, skb_network_offset(skb) +
-						 sizeof(*ip.v6),
-						 &l4_proto, &frag_off);
-		}
-
-		/* define outer transport */
-		switch (l4_proto) {
-		case IPPROTO_UDP:
-			tunnel |= IDPF_TXD_CTX_UDP_TUNNELING;
-			break;
-#ifdef HAVE_GRE_ENCAP_OFFLOAD
-		case IPPROTO_GRE:
-			tunnel |= IDPF_TXD_CTX_GRE_TUNNELING;
-			/* There was a long-standing issue in GRE where GSO
-			 * was not setting the outer transport header unless
-			 * a GRE checksum was requested. This was fixed in
-			 * the 4.6 version of the kernel.  In the 4.7 kernel
-			 * support for GRE over IPv6 was added to GSO.  So we
-			 * can assume this workaround for all IPv4 headers
-			 * without impacting later versions of the GRE.
-			 */
-			if (ip.v4->version == 4)
-				l4.hdr = ip.hdr + (ip.v4->ihl * 4);
-			break;
-		case IPPROTO_IPIP:
-		case IPPROTO_IPV6:
-			l4.hdr = skb_inner_network_header(skb);
-			break;
-#endif
-		default:
-			if (is_tso)
-				return -1;
-
-			skb_checksum_help(skb);
-			return 0;
-		}
-		off->tx_flags |= IDPF_TX_FLAGS_TUNNEL;
-
-		/* compute outer L3 header size */
-		tunnel |= FIELD_PREP(IDPF_TXD_CTX_QW0_TUNN_EXT_IPLEN_M,
-				     (l4.hdr - ip.hdr) / 4);
-
-		/* switch IP header pointer from outer to inner header */
-		ip.hdr = skb_inner_network_header(skb);
-
-		/* compute tunnel header size */
-		tunnel |= FIELD_PREP(IDPF_TXD_CTX_QW0_TUNN_NATLEN_M,
-				     (ip.hdr - l4.hdr) / 2);
-
-		/* indicate if we need to offload outer UDP header */
-#ifdef NETIF_F_GSO_PARTIAL
-		if (is_tso &&
-		    !(skb_shinfo(skb)->gso_type & SKB_GSO_PARTIAL) &&
-		    (skb_shinfo(skb)->gso_type & SKB_GSO_UDP_TUNNEL_CSUM))
-#else
-		if (is_tso &&
-		    (skb_shinfo(skb)->gso_type & SKB_GSO_UDP_TUNNEL_CSUM))
-#endif
-			tunnel |= IDPF_TXD_CTX_QW0_TUNN_L4T_CS_M;
-
-		/* record tunnel offload values */
-		off->cd_tunneling |= tunnel;
-
-		/* switch L4 header pointer from outer to inner */
-		l4.hdr = skb_inner_transport_header(skb);
-		l4_proto = 0;
-
-		/* reset type as we transition from outer to inner headers */
-		off->tx_flags &= ~(IDPF_TX_FLAGS_IPV4 | IDPF_TX_FLAGS_IPV6);
-		if (ip.v4->version == 4)
-			off->tx_flags |= IDPF_TX_FLAGS_IPV4;
-		if (ip.v6->version == 6)
-			off->tx_flags |= IDPF_TX_FLAGS_IPV6;
-	}
-#endif /* HAVE_ENCAP_CSUM_OFFLOAD */
 
 	/* Enable IP checksum offloads */
 	if (off->tx_flags & IDPF_TX_FLAGS_IPV4) {
@@ -194,7 +98,59 @@ static int idpf_tx_singleq_csum(struct sk_buff *skb,
 	off->td_cmd |= cmd;
 	off->hdr_offsets |= offset;
 
-	return 0;
+	return 1;
+}
+
+/**
+ * idpf_tx_singleq_dma_map_error - handle TX DMA map errors
+ * @txq: queue to send buffer on
+ * @skb: send buffer
+ * @first: original first buffer info buffer for packet
+ * @idx: starting point on ring to unwind
+ */
+static void idpf_tx_singleq_dma_map_error(struct idpf_queue *txq,
+					  struct sk_buff *skb,
+					  struct idpf_tx_buf *first, u16 idx)
+{
+	struct libeth_sq_napi_stats ss = { };
+	struct libeth_cq_pp cp = {
+		.dev	= txq->dev,
+		.ss	= &ss,
+	};
+
+	u64_stats_update_begin(&txq->stats_sync);
+	u64_stats_inc(&txq->q_stats.tx.dma_map_errs);
+	u64_stats_update_end(&txq->stats_sync);
+
+	/* clear dma mappings for failed tx_buf map */
+	for (;;) {
+		struct idpf_tx_buf *tx_buf;
+
+		tx_buf = &txq->tx.bufs[idx];
+		libeth_tx_complete(tx_buf, &cp);
+		if (tx_buf == first)
+			break;
+		if (idx == 0)
+			idx = txq->desc_count;
+		idx--;
+	}
+
+	if (skb_is_gso(skb)) {
+		union idpf_tx_flex_desc *tx_desc;
+
+		/* If we failed a DMA mapping for a TSO packet, we will have
+		 * used one additional descriptor for a context
+		 * descriptor. Reset that here.
+		 */
+		tx_desc = IDPF_FLEX_TX_DESC(txq, idx);
+		memset(tx_desc, 0, sizeof(*tx_desc));
+		if (idx == 0)
+			idx = txq->desc_count;
+		idx--;
+	}
+
+	/* Update tail in case netdev_xmit_more was previously true */
+	idpf_tx_buf_hw_update(txq, idx, false);
 }
 
 /**
@@ -236,13 +192,14 @@ static void idpf_tx_singleq_map(struct idpf_queue *tx_q,
 	for (frag = &skb_shinfo(skb)->frags[0];; frag++) {
 		unsigned int max_data = IDPF_TX_MAX_DESC_DATA_ALIGNED;
 
-		if (dma_mapping_error(tx_q->dev, dma))
-			return idpf_tx_dma_map_error(tx_q, skb, first, i);
+		if (unlikely(dma_mapping_error(tx_q->dev, dma)))
+			return idpf_tx_singleq_dma_map_error(tx_q, skb,
+							     first, i);
 
 		/* record length, and DMA address */
 		dma_unmap_len_set(tx_buf, len, size);
 		dma_unmap_addr_set(tx_buf, dma, dma);
-		tx_buf->type = IDPF_TX_BUF_FRAG;
+		tx_buf->type = LIBETH_SQE_FRAG;
 
 		/* align size to end of page */
 		max_data += -dma & (IDPF_TX_MAX_READ_REQ_SIZE - 1);
@@ -265,7 +222,7 @@ static void idpf_tx_singleq_map(struct idpf_queue *tx_q,
 				tx_desc++;
 			}
 
-			tx_buf->type = IDPF_TX_BUF_EMPTY;
+			tx_buf->type = LIBETH_SQE_EMPTY;
 
 			dma += max_data;
 			size -= max_data;
@@ -302,13 +259,13 @@ static void idpf_tx_singleq_map(struct idpf_queue *tx_q,
 	tx_desc->qw1 = idpf_tx_singleq_build_ctob(td_cmd, offsets,
 						  size, td_tag);
 
-	first->type = IDPF_TX_BUF_SKB;
-	first->eop_idx = i;
+	first->type = LIBETH_SQE_SKB;
+	first->rs_idx = i;
 
 	i = idpf_singleq_bump_desc_idx(tx_q, i);
 
 	nq = netdev_get_tx_queue(tx_q->vport->netdev, tx_q->idx);
-	netdev_tx_sent_queue(nq, first->bytecount);
+	netdev_tx_sent_queue(nq, first->bytes);
 
 	idpf_tx_buf_hw_update(tx_q, i, netdev_xmit_more());
 }
@@ -326,7 +283,7 @@ idpf_tx_singleq_get_ctx_desc(struct idpf_queue *txq)
 	struct idpf_base_tx_ctx_desc *ctx_desc;
 	int ntu = txq->next_to_use;
 
-	txq->tx.bufs[ntu].type = IDPF_TX_BUF_RSVD;
+	txq->tx.bufs[ntu].type = LIBETH_SQE_CTX;
 
 	ctx_desc = IDPF_BASE_TX_CTX_DESC(txq, ntu);
 
@@ -345,18 +302,22 @@ static void
 idpf_tx_singleq_build_ctx_desc(struct idpf_queue *txq,
 			       struct idpf_tx_offload_params *offload)
 {
+	u16 seg_idx = min_t(u16, IDPF_MAX_SEGS, offload->tso_segs) - 1;
 	struct idpf_base_tx_ctx_desc *desc = idpf_tx_singleq_get_ctx_desc(txq);
 	u64 qw1 = (u64)IDPF_TX_DESC_DTYPE_CTX;
 
 	if (offload->tso_segs) {
 		qw1 |= IDPF_TX_CTX_DESC_TSO << IDPF_TXD_CTX_QW1_CMD_S;
-		qw1 |= ((u64)offload->tso_len << IDPF_TXD_CTX_QW1_TSO_LEN_S) &
-			IDPF_TXD_CTX_QW1_TSO_LEN_M;
-		qw1 |= ((u64)offload->mss << IDPF_TXD_CTX_QW1_MSS_S) &
-			IDPF_TXD_CTX_QW1_MSS_M;
+		qw1 |= FIELD_PREP(IDPF_TXD_CTX_QW1_TSO_LEN_M,
+				  offload->tso_len);
+		qw1 |= FIELD_PREP(IDPF_TXD_CTX_QW1_MSS_M, offload->mss);
 
 		u64_stats_update_begin(&txq->stats_sync);
 		u64_stats_inc(&txq->q_stats.tx.lso_pkts);
+		u64_stats_add(&txq->q_stats.tx.lso_segs_tot,
+			      offload->tso_segs);
+		u64_stats_add(&txq->q_stats.tx.lso_bytes, offload->tso_len);
+		u64_stats_inc(&txq->q_stats.tx.segs[seg_idx]);
 		u64_stats_update_end(&txq->stats_sync);
 	}
 
@@ -365,38 +326,6 @@ idpf_tx_singleq_build_ctx_desc(struct idpf_queue *txq,
 	desc->qw0.l2tag2 = 0;
 	desc->qw0.rsvd1 = 0;
 	desc->qw1 = cpu_to_le64(qw1);
-}
-
-/**
- * idpf_tx_maybe_stop_singleq - check for singleq Tx stop conditions
- * @txq: the queue to be checked
- * @desc_count: number of descriptors needed for this packet
- *
- * Returns 0 if stop is not needed
- */
-static int idpf_tx_maybe_stop_singleq(struct idpf_queue *txq,
-				      unsigned int desc_count)
-{
-	if (likely(IDPF_DESC_UNUSED(txq) > desc_count))
-		return 0;
-
-	u64_stats_update_begin(&txq->stats_sync);
-	u64_stats_inc(&txq->q_stats.tx.q_busy);
-	u64_stats_update_end(&txq->stats_sync);
-
-	netif_stop_subqueue(txq->vport->netdev, txq->idx);
-
-	/* Memory barrier before checking head and tail */
-	smp_mb();
-
-	/* Check again in a case another CPU has just made room available. */
-	if (likely(IDPF_DESC_UNUSED(txq) < desc_count))
-		return -EBUSY;
-
-	/* A reprieve! - use start_subqueue because it doesn't call schedule */
-	netif_start_subqueue(txq->vport->netdev, txq->idx);
-
-	return 0;
 }
 
 /**
@@ -411,17 +340,18 @@ static netdev_tx_t idpf_tx_singleq_frame(struct sk_buff *skb,
 {
 	struct idpf_tx_offload_params offload = { };
 	struct idpf_tx_buf *first;
-	unsigned int count;
+	u32 count, buf_count = 1;
+	int csum, tso, needed;
 	__be16 protocol;
-	int tso;
 
-	count = idpf_tx_desc_count_required(tx_q, skb);
+	count = idpf_tx_res_count_required(tx_q, skb, &buf_count);
 	if (unlikely(!count))
 		return idpf_tx_drop_skb(tx_q, skb);
 
-	if (idpf_tx_maybe_stop_singleq(tx_q,
-				       count + IDPF_TX_DESCS_PER_CACHE_LINE +
-				       IDPF_TX_DESCS_FOR_CTX)) {
+	needed = count + IDPF_TX_DESCS_PER_CACHE_LINE + IDPF_TX_DESCS_FOR_CTX;
+	if (!netif_subqueue_maybe_stop(tx_q->netdev, tx_q->idx,
+				       IDPF_DESC_UNUSED(tx_q),
+				       needed, needed)) {
 		idpf_tx_buf_hw_update(tx_q, tx_q->next_to_use, false);
 		return NETDEV_TX_BUSY;
 	}
@@ -436,7 +366,8 @@ static netdev_tx_t idpf_tx_singleq_frame(struct sk_buff *skb,
 	if (unlikely(tso < 0))
 		goto out_drop;
 
-	if (idpf_tx_singleq_csum(skb, &offload))
+	csum = idpf_tx_singleq_csum(skb, &offload);
+	if (csum < 0)
 		goto out_drop;
 
 	if (tso || offload.cd_tunneling)
@@ -447,11 +378,11 @@ static netdev_tx_t idpf_tx_singleq_frame(struct sk_buff *skb,
 	first->skb = skb;
 
 	if (tso) {
-		first->gso_segs = offload.tso_segs;
-		first->bytecount = skb->len + ((first->gso_segs - 1) * offload.tso_hdr_len);
+		first->packets = offload.tso_segs;
+		first->bytes = skb->len + ((first->packets - 1) * offload.tso_hdr_len);
 	} else {
-		first->bytecount = max_t(unsigned int, skb->len, ETH_ZLEN);
-		first->gso_segs = 1;
+		first->bytes = max_t(unsigned int, skb->len, ETH_ZLEN);
+		first->packets = 1;
 	}
 #ifdef IDPF_ADD_PROBES
 	idpf_tx_extra_counters(tx_q, first, &offload);
@@ -521,15 +452,15 @@ static bool idpf_tx_singleq_clean(struct idpf_queue *tx_q, int napi_budget,
 		 * such. We can skip this descriptor since there is no buffer
 		 * to clean.
 		 */
-		if (unlikely(tx_buf->type == IDPF_TX_BUF_RSVD)) {
-			tx_buf->type = IDPF_TX_BUF_EMPTY;
+		if (unlikely(tx_buf->type == LIBETH_SQE_CTX)) {
+			tx_buf->type = LIBETH_SQE_EMPTY;
 			goto fetch_next_txq_desc;
 		}
 
-		if (unlikely(tx_buf->type != IDPF_TX_BUF_SKB))
+		if (unlikely(tx_buf->type != LIBETH_SQE_SKB))
 			break;
 
-		eop_desc = IDPF_BASE_TX_DESC(tx_q, tx_buf->eop_idx);
+		eop_desc = IDPF_BASE_TX_DESC(tx_q, tx_buf->rs_idx);
 		/* prevent any other reads prior to eop_desc */
 		smp_rmb();
 
@@ -539,15 +470,15 @@ static bool idpf_tx_singleq_clean(struct idpf_queue *tx_q, int napi_budget,
 			break;
 
 		/* update the statistics for this packet */
-		total_bytes += tx_buf->bytecount;
-		total_pkts += tx_buf->gso_segs;
+		total_bytes += tx_buf->bytes;
+		total_pkts += tx_buf->packets;
 
 #ifdef HAVE_XDP_SUPPORT
 		if (test_bit(__IDPF_Q_XDP, tx_q->flags))
 #ifdef HAVE_XDP_FRAME_STRUCT
 			xdp_return_frame(tx_buf->xdpf);
 #else
-			page_frag_free(tx_buf->raw_buf);
+			page_frag_free(tx_buf->raw);
 #endif /* HAVE_XDP_FRAME_STRUCT */
 		else
 			/* free the skb */
@@ -563,7 +494,7 @@ static bool idpf_tx_singleq_clean(struct idpf_queue *tx_q, int napi_budget,
 				 DMA_TO_DEVICE);
 
 		/* clear tx_buf data */
-		tx_buf->type = IDPF_TX_BUF_EMPTY;
+		tx_buf->type = LIBETH_SQE_EMPTY;
 		tx_buf->nr_frags = 0;
 
 		/* unmap remaining buffers */
@@ -585,7 +516,7 @@ static bool idpf_tx_singleq_clean(struct idpf_queue *tx_q, int napi_budget,
 					       DMA_TO_DEVICE);
 				dma_unmap_len_set(tx_buf, len, 0);
 			}
-			tx_buf->type = IDPF_TX_BUF_EMPTY;
+			tx_buf->type = LIBETH_SQE_EMPTY;
 		}
 
 		/* update budget only if we did something */
@@ -802,17 +733,15 @@ static void idpf_rx_singleq_base_csum(struct idpf_queue *rx_q,
 	rx_status = FIELD_GET(VIRTCHNL2_RX_BASE_DESC_QW1_STATUS_M, qword);
 	rx_error = FIELD_GET(VIRTCHNL2_RX_BASE_DESC_QW1_ERROR_M, qword);
 
-	csum_bits.ipe = FIELD_GET(BIT(VIRTCHNL2_RX_BASE_DESC_ERROR_IPE_S),
-				  rx_error);
-	csum_bits.eipe = FIELD_GET(BIT(VIRTCHNL2_RX_BASE_DESC_ERROR_EIPE_S),
+	csum_bits.ipe = FIELD_GET(VIRTCHNL2_RX_BASE_DESC_ERROR_IPE_M, rx_error);
+	csum_bits.eipe = FIELD_GET(VIRTCHNL2_RX_BASE_DESC_ERROR_EIPE_M,
 				   rx_error);
-	csum_bits.l4e = FIELD_GET(BIT(VIRTCHNL2_RX_BASE_DESC_ERROR_L4E_S),
-				  rx_error);
-	csum_bits.pprs = FIELD_GET(BIT(VIRTCHNL2_RX_BASE_DESC_ERROR_PPRS_S),
+	csum_bits.l4e = FIELD_GET(VIRTCHNL2_RX_BASE_DESC_ERROR_L4E_M, rx_error);
+	csum_bits.pprs = FIELD_GET(VIRTCHNL2_RX_BASE_DESC_ERROR_PPRS_M,
 				   rx_error);
-	csum_bits.l3l4p = FIELD_GET(BIT(VIRTCHNL2_RX_BASE_DESC_STATUS_L3L4P_S),
+	csum_bits.l3l4p = FIELD_GET(VIRTCHNL2_RX_BASE_DESC_STATUS_L3L4P_M,
 				    rx_status);
-	csum_bits.ipv6exadd = FIELD_GET(BIT(VIRTCHNL2_RX_BASE_DESC_STATUS_IPV6EXADD_S),
+	csum_bits.ipv6exadd = FIELD_GET(VIRTCHNL2_RX_BASE_DESC_STATUS_IPV6EXADD_M,
 					rx_status);
 	csum_bits.nat = 0;
 	csum_bits.eudpe = 0;
@@ -841,19 +770,19 @@ static void idpf_rx_singleq_flex_csum(struct idpf_queue *rx_q,
 	rx_status0 = le16_to_cpu(rx_desc->flex_nic_wb.status_error0);
 	rx_status1 = le16_to_cpu(rx_desc->flex_nic_wb.status_error1);
 
-	csum_bits.ipe = FIELD_GET(BIT(VIRTCHNL2_RX_FLEX_DESC_STATUS0_XSUM_IPE_S),
+	csum_bits.ipe = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_STATUS0_XSUM_IPE_M,
 				  rx_status0);
-	csum_bits.eipe = FIELD_GET(BIT(VIRTCHNL2_RX_FLEX_DESC_STATUS0_XSUM_EIPE_S),
+	csum_bits.eipe = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_STATUS0_XSUM_EIPE_M,
 				   rx_status0);
-	csum_bits.l4e = FIELD_GET(BIT(VIRTCHNL2_RX_FLEX_DESC_STATUS0_XSUM_L4E_S),
+	csum_bits.l4e = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_STATUS0_XSUM_L4E_M,
 				  rx_status0);
-	csum_bits.eudpe = FIELD_GET(BIT(VIRTCHNL2_RX_FLEX_DESC_STATUS0_XSUM_EUDPE_S),
+	csum_bits.eudpe = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_STATUS0_XSUM_EUDPE_M,
 				    rx_status0);
-	csum_bits.l3l4p = FIELD_GET(BIT(VIRTCHNL2_RX_FLEX_DESC_STATUS0_L3L4P_S),
+	csum_bits.l3l4p = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_STATUS0_L3L4P_M,
 				    rx_status0);
-	csum_bits.ipv6exadd = FIELD_GET(BIT(VIRTCHNL2_RX_FLEX_DESC_STATUS0_IPV6EXADD_S),
+	csum_bits.ipv6exadd = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_STATUS0_IPV6EXADD_M,
 					rx_status0);
-	csum_bits.nat = FIELD_GET(BIT(VIRTCHNL2_RX_FLEX_DESC_STATUS1_NAT_S),
+	csum_bits.nat = FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_STATUS1_NAT_M,
 				  rx_status1);
 	csum_bits.pprs = 0;
 
@@ -881,8 +810,7 @@ static void idpf_rx_singleq_base_hash(struct idpf_queue *rx_q,
 	if (unlikely(!(rx_q->vport->netdev->features & NETIF_F_RXHASH)))
 		return;
 
-	mask = VIRTCHNL2_RX_BASE_DESC_FLTSTAT_RSS_HASH <<
-	       VIRTCHNL2_RX_BASE_DESC_STATUS_FLTSTAT_S;
+	mask = VIRTCHNL2_RX_BASE_DESC_STATUS_FLTSTAT_M;
 	qw1 = le64_to_cpu(rx_desc->base_wb.qword1.status_error_ptype_len);
 
 	if (FIELD_GET(mask, qw1) == mask) {
@@ -912,7 +840,7 @@ static void idpf_rx_singleq_flex_hash(struct idpf_queue *rx_q,
 	if (unlikely(!(rx_q->vport->netdev->features & NETIF_F_RXHASH)))
 		return;
 
-	if (FIELD_GET(BIT(VIRTCHNL2_RX_FLEX_DESC_STATUS0_RSS_VALID_S),
+	if (FIELD_GET(VIRTCHNL2_RX_FLEX_DESC_STATUS0_RSS_VALID_M,
 		      le16_to_cpu(rx_desc->flex_nic_wb.status_error0)))
 		skb_set_hash(skb, le32_to_cpu(rx_desc->flex_nic_wb.rss_hash),
 			     idpf_ptype_to_htype(decoded));
@@ -1063,6 +991,9 @@ static bool idpf_rx_singleq_recycle_buf(struct idpf_queue *rxq,
 		/* hand second half of page back to the queue */
 		idpf_rx_reuse_page(rxq, rx_buf);
 		recycled = true;
+		u64_stats_update_begin(&rxq->stats_sync);
+		u64_stats_inc(&rxq->q_stats.rx.page_recycles);
+		u64_stats_update_end(&rxq->stats_sync);
 	} else {
 		/* we are not reusing the buffer so unmap it */
 #ifndef HAVE_STRUCT_DMA_ATTRS
@@ -1073,6 +1004,9 @@ static bool idpf_rx_singleq_recycle_buf(struct idpf_queue *rxq,
 			       DMA_FROM_DEVICE);
 #endif /* !HAVE_STRUCT_DMA_ATTRS */
 		__page_frag_cache_drain(pinfo->page, pinfo->pagecnt_bias);
+		u64_stats_update_begin(&rxq->stats_sync);
+		u64_stats_inc(&rxq->q_stats.rx.page_reallocs);
+		u64_stats_update_end(&rxq->stats_sync);
 	}
 
 	/* clear contents of buffer_info */
@@ -1184,7 +1118,7 @@ static int idpf_rx_singleq_clean(struct idpf_queue *rx_q, int budget)
 		 * isn't used, if the hardware wrote DD then the length will be
 		 * non-zero
 		 */
-#define IDPF_RXD_DD BIT(VIRTCHNL2_RX_BASE_DESC_STATUS_DD_S)
+#define IDPF_RXD_DD VIRTCHNL2_RX_BASE_DESC_STATUS_DD_M
 		if (!idpf_rx_singleq_test_staterr(rx_desc,
 						  IDPF_RXD_DD))
 			break;
@@ -1381,9 +1315,11 @@ int idpf_vport_singleq_napi_poll(struct napi_struct *napi, int budget)
  * @dma:  Address of DMA buffer used for XDP TX.
  * @idx:  Index of the TX buffer in the queue.
  * @size: Size of data to be transmitted.
-  */
+ * @params: not used in single queue mode, only for function ptr compatibility.
+ */
 void idpf_prepare_xdp_tx_singleq_desc(struct idpf_queue *xdpq, dma_addr_t dma,
-				      u16 idx, u32 size)
+				      u16 idx, u32 size,
+				      __always_unused struct idpf_tx_splitq_params *params)
 {
 	struct idpf_base_tx_desc *tx_desc;
 	u64 td_cmd;

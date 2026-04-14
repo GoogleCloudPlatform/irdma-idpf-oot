@@ -397,6 +397,7 @@ int irdma_puda_poll_cmpl(struct irdma_sc_dev *dev, struct irdma_sc_cq *cq,
 		dma_sync_single_for_cpu(dev->hw->device, buf->mem.pa,
 					buf->mem.size, DMA_BIDIRECTIONAL);
 		IRDMA_RING_SET_TAIL(qp->sq_ring, info.wqe_idx);
+		buf->queued = false;
 		rsrc->xmit_complete(rsrc->vsi, buf);
 		spin_lock_irqsave(&rsrc->bufpool_lock, flags);
 		rsrc->tx_wqe_avail_cnt++;
@@ -500,7 +501,7 @@ int irdma_puda_send(struct irdma_sc_qp *qp, struct irdma_puda_send_info *info)
  * @rsrc: resource to use for buffer
  * @buf: puda buffer to transmit
  */
-void irdma_puda_send_buf(struct irdma_puda_rsrc *rsrc,
+int irdma_puda_send_buf(struct irdma_puda_rsrc *rsrc,
 			 struct irdma_puda_buf *buf)
 {
 	struct irdma_puda_send_info info;
@@ -508,17 +509,28 @@ void irdma_puda_send_buf(struct irdma_puda_rsrc *rsrc,
 	unsigned long flags;
 
 	spin_lock_irqsave(&rsrc->bufpool_lock, flags);
+	if (buf) {
+		if (buf->queued) {
+			ibdev_dbg(to_ibdev(rsrc->dev),
+				  "PUDA: PUDA: Attempting to re-send queued buf %p\n",
+				  buf);
+			spin_unlock_irqrestore(&rsrc->bufpool_lock, flags);
+			return -EINVAL;
+		}
+
+		buf->queued = true;
+	}
 	/* if no wqe available or not from a completion and we have
 	 * pending buffers, we must queue new buffer
 	 */
 	if (!rsrc->tx_wqe_avail_cnt || (buf && !list_empty(&rsrc->txpend))) {
 		list_add_tail(&buf->list, &rsrc->txpend);
-		spin_unlock_irqrestore(&rsrc->bufpool_lock, flags);
 		rsrc->stats_sent_pkt_q++;
+		spin_unlock_irqrestore(&rsrc->bufpool_lock, flags);
 		if (rsrc->type == IRDMA_PUDA_RSRC_TYPE_ILQ)
 			ibdev_dbg(to_ibdev(rsrc->dev),
 				  "PUDA: adding to txpend\n");
-		return;
+		return 0;
 	}
 	rsrc->tx_wqe_avail_cnt--;
 	/* if we are coming from a completion and have pending buffers
@@ -559,6 +571,7 @@ void irdma_puda_send_buf(struct irdma_puda_rsrc *rsrc,
 	}
 done:
 	spin_unlock_irqrestore(&rsrc->bufpool_lock, flags);
+	return 0;
 }
 
 /**
@@ -763,12 +776,6 @@ static int irdma_puda_cq_wqe(struct irdma_sc_dev *dev, struct irdma_sc_cq *cq)
 	irdma_sc_cqp_post_sq(dev->cqp);
 	status = irdma_sc_poll_for_cqp_op_done(dev->cqp, IRDMA_CQP_OP_CREATE_CQ,
 					       &compl_info);
-	if (!status) {
-		struct irdma_sc_ceq *ceq = dev->ceq[0];
-
-		if (ceq && ceq->reg_cq)
-			status = irdma_sc_add_cq_ctx(ceq, cq);
-	}
 	return status;
 }
 
@@ -901,24 +908,17 @@ void irdma_puda_dele_rsrc(struct irdma_sc_vsi *vsi, enum puda_rsrc_type type,
 	struct irdma_puda_buf *buf = NULL;
 	struct irdma_puda_buf *nextbuf = NULL;
 	struct irdma_virt_mem *vmem;
-	struct irdma_sc_ceq *ceq;
-
-	ceq = vsi->dev->ceq[0];
 
 	switch (type) {
 	case IRDMA_PUDA_RSRC_TYPE_ILQ:
 		rsrc = vsi->ilq;
 		vmem = &vsi->ilq_mem;
 		vsi->ilq = NULL;
-		if (ceq && ceq->reg_cq)
-			irdma_sc_remove_cq_ctx(ceq, &rsrc->cq);
 		break;
 	case IRDMA_PUDA_RSRC_TYPE_IEQ:
 		rsrc = vsi->ieq;
 		vmem = &vsi->ieq_mem;
 		vsi->ieq = NULL;
-		if (ceq && ceq->reg_cq)
-			irdma_sc_remove_cq_ctx(ceq, &rsrc->cq);
 		break;
 	default:
 		ibdev_dbg(to_ibdev(dev), "PUDA: error resource type = 0x%x\n",

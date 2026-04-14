@@ -241,12 +241,16 @@ static ssize_t roce_cwnd_store(struct config_item *item,
 						 group);
 #endif
 	struct irdma_device *iwdev = grp->iwdev;
-	u32 rsrc_cwnd;
+	u32 rsrc_cwnd, rsrc_cwnd_max;
 
 	if (kstrtou32(buf, 0, &rsrc_cwnd))
 		return -EINVAL;
 
-	if (!rsrc_cwnd || rsrc_cwnd > 0x400)
+#define IRDMA_ROCE_CWND_MAX_GEN2	0x400		/* for <= GEN2 */
+#define IRDMA_ROCE_CWND_MAX		0xFFFFFF	/* 24 bits */
+	rsrc_cwnd_max = iwdev->rf->sc_dev.hw_attrs.uk_attrs.hw_rev <= IRDMA_GEN_2 ?
+		IRDMA_ROCE_CWND_MAX_GEN2 : IRDMA_ROCE_CWND_MAX;
+	if (!rsrc_cwnd || rsrc_cwnd > rsrc_cwnd_max)
 		return -EINVAL;
 
 	iwdev->roce_cwnd = rsrc_cwnd;

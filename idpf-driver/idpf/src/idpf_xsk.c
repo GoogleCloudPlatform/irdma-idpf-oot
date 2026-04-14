@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2019-2025 Intel Corporation */
+/* Copyright (C) 2019-2026 Intel Corporation */
 
 #include "idpf.h"
 #ifdef HAVE_NETDEV_BPF_XSK_POOL
@@ -224,8 +224,7 @@ idpf_xmit_splitq_zc(struct idpf_queue *xdpq, int budget)
 
 	while (likely(budget-- > 0)) {
 		struct idpf_tx_buf *tx_buf;
-
-		tx_buf = &xdpq->tx.bufs[ntu];
+		u32 buf_id;
 
 		if (!xsk_tx_peek_desc(xdpq->xsk_pool, &desc))
 			break;
@@ -233,10 +232,22 @@ idpf_xmit_splitq_zc(struct idpf_queue *xdpq, int budget)
 		dma = xsk_buff_raw_get_dma(xdpq->xsk_pool, desc.addr);
 		xsk_buff_raw_dma_sync_for_device(xdpq->xsk_pool, dma,
 						 desc.len);
-		tx_buf->bytecount = desc.len;
 
-		tx_parms.compl_tag =
-			(xdpq->compl_tag_cur_gen << xdpq->compl_tag_gen_s) | ntu;
+		if (idpf_queue_has(FLOW_SCH_EN, xdpq)) {
+			/* Xdp only uses a single buffer. No need to save refillq state
+			 * for rollback like we do in the standard data path.
+			 */
+			if (unlikely(!idpf_tx_get_free_buf_id(xdpq->tx.refillq,
+							      &buf_id)))
+				return IDPF_XDP_CONSUMED;
+
+			tx_parms.compl_tag = buf_id;
+		} else {
+			buf_id = ntu;
+		}
+
+		tx_buf = &xdpq->tx.bufs[buf_id];
+		tx_buf->bytes = desc.len;
 
 		tx_desc = IDPF_FLEX_TX_DESC(xdpq, ntu);
 		tx_desc->q.buf_addr = cpu_to_le64(dma);
@@ -248,12 +259,10 @@ idpf_xmit_splitq_zc(struct idpf_queue *xdpq, int budget)
 					  tx_parms.offload.td_cmd, desc.len);
 
 		ntu++;
-		if (ntu == xdpq->desc_count) {
+		if (ntu == xdpq->desc_count)
 			ntu = 0;
-			xdpq->compl_tag_cur_gen = IDPF_TX_ADJ_COMPL_TAG_GEN(xdpq);
-		}
 
-		tx_buf->compl_tag = tx_parms.compl_tag;
+		idpf_tx_buf_compl_tag(tx_buf) = tx_parms.compl_tag;
 	}
 
 	if (likely(tx_desc)) {
@@ -295,7 +304,7 @@ idpf_xmit_singleq_zc(struct idpf_queue *xdpq, int budget)
 		dma = xsk_buff_raw_get_dma(xdpq->xsk_pool, desc.addr);
 		xsk_buff_raw_dma_sync_for_device(xdpq->xsk_pool, dma,
 						 desc.len);
-		tx_buf->bytecount = desc.len;
+		tx_buf->bytes = desc.len;
 
 		tx_desc = IDPF_BASE_TX_DESC(xdpq, ntu);
 		tx_desc->buf_addr = cpu_to_le64(dma);
@@ -334,7 +343,7 @@ idpf_clean_xdp_tx_buf(struct idpf_queue *xdpq, struct idpf_tx_buf *tx_buf)
 #ifdef HAVE_XDP_FRAME_STRUCT
 	xdp_return_frame(tx_buf->xdpf);
 #else
-	xdp_return_frame((struct xdp_frame *)tx_buf->raw_buf);
+	xdp_return_frame((struct xdp_frame *)tx_buf->raw);
 #endif
 	xdpq->xdp_tx_active--;
 	dma_unmap_single(xdpq->dev, dma_unmap_addr(tx_buf, dma),
@@ -350,12 +359,15 @@ idpf_clean_xdp_tx_buf(struct idpf_queue *xdpq, struct idpf_tx_buf *tx_buf)
  * @ntc: Index of the next Tx buffer that shall be cleaned.
  * @clean_count: number of ready Tx frames that should be cleaned.
  * @cleaned: pointer to stats struct to track cleaned packets/bytes
+ * @buf_id: completion tag of the packet that should be cleaned (only relevant
+ *	    for flow scheduling)
  *
  * Returns the structure containing the number of bytes and packets cleaned.
  */
 static void
 idpf_tx_clean_zc(struct idpf_queue *xdpq, u16 ntc, u16 clean_count,
-		 struct idpf_cleaned_stats *cleaned)
+		 struct libeth_sq_napi_stats *cleaned,
+		 u16 buf_id)
 {
 	struct idpf_tx_buf *tx_buf;
 	u32 xsk_frames = 0;
@@ -369,21 +381,27 @@ idpf_tx_clean_zc(struct idpf_queue *xdpq, u16 ntc, u16 clean_count,
 		goto skip;
 	}
 
-	for (i = 0; i < clean_count; i++) {
+	if (unlikely(idpf_queue_has(FLOW_SCH_EN, xdpq))) {
+		clean_count = 1;
+		tx_buf = &xdpq->tx.bufs[buf_id];
+	} else {
 		tx_buf = &xdpq->tx.bufs[ntc];
+	}
+
+	for (i = 0; i < clean_count; i++) {
 
 #ifdef HAVE_XDP_FRAME_STRUCT
 		if (tx_buf->xdpf) {
 #else
-		if (tx_buf->raw_buf) {
+		if (tx_buf->raw) {
 #endif
 			idpf_clean_xdp_tx_buf(xdpq, tx_buf);
 #ifdef HAVE_XDP_FRAME_STRUCT
 			tx_buf->xdpf = NULL;
 #else
-			tx_buf->raw_buf = NULL;
+			tx_buf->raw = NULL;
 #endif
-			cleaned->bytes += tx_buf->bytecount;
+			cleaned->bytes += tx_buf->bytes;
 		} else {
 			xsk_frames++;
 		}
@@ -391,6 +409,8 @@ idpf_tx_clean_zc(struct idpf_queue *xdpq, u16 ntc, u16 clean_count,
 		++ntc;
 		if (unlikely(ntc >= xdpq->desc_count))
 			ntc = 0;
+
+		tx_buf = &xdpq->tx.bufs[ntc];
 	}
 skip:
 	xdpq->next_to_clean += clean_count;
@@ -441,10 +461,11 @@ idpf_prepare_for_xmit_zc(struct idpf_queue *xdpq)
  */
 void
 idpf_tx_splitq_clean_zc(struct idpf_queue *xdpq, u16 compl_tag,
-			struct idpf_cleaned_stats *cleaned)
+			struct libeth_sq_napi_stats *cleaned)
 {
-	u16 end = (compl_tag & xdpq->compl_tag_bufid_m) + 1;
+	struct idpf_tx_buf *tx_buf = &xdpq->tx.bufs[compl_tag];
 	u16 ntc = xdpq->next_to_clean;
+	u16 end = tx_buf->rs_idx + 1;
 	u16 frames_ready = 0;
 
 	if (end >= ntc)
@@ -452,7 +473,8 @@ idpf_tx_splitq_clean_zc(struct idpf_queue *xdpq, u16 compl_tag,
 	else
 		frames_ready = end + xdpq->desc_count - ntc;
 
-	return idpf_tx_clean_zc(xdpq, ntc, frames_ready, cleaned);
+	return idpf_tx_clean_zc(xdpq, ntc, frames_ready, cleaned,
+				compl_tag);
 }
 
 /**
@@ -467,7 +489,7 @@ idpf_tx_splitq_clean_zc(struct idpf_queue *xdpq, u16 compl_tag,
 bool
 idpf_tx_singleq_clean_zc(struct idpf_queue *xdpq, int *cleaned)
 {
-	struct idpf_cleaned_stats cleaned_stats = { };
+	struct libeth_sq_napi_stats cleaned_stats = { };
 	u16 next_rs_idx = xdpq->xdp_next_rs_idx;
 	struct idpf_base_tx_desc *next_rs_desc;
 	u16 send_budget, frames_ready = 0;
@@ -482,7 +504,7 @@ idpf_tx_singleq_clean_zc(struct idpf_queue *xdpq, int *cleaned)
 			frames_ready = next_rs_idx + xdpq->desc_count - ntc;
 	}
 
-	idpf_tx_clean_zc(xdpq, ntc, frames_ready, &cleaned_stats);
+	idpf_tx_clean_zc(xdpq, ntc, frames_ready, &cleaned_stats, 0);
 	*cleaned = cleaned_stats.packets;
 
 	send_budget = idpf_prepare_for_xmit_zc(xdpq);
@@ -533,10 +555,9 @@ static int
 idpf_xsk_check_xmit_params(struct idpf_vport *vport, u32 xdpq_idx)
 {
 	struct idpf_netdev_priv *np = netdev_priv(vport->netdev);
-	struct idpf_q_grp *q_grp = &vport->dflt_grp.q_grp;
 	struct idpf_vport_user_config_data *cfg_data;
 
-	if (unlikely(!np->active))
+	if (unlikely(!test_bit(IDPF_VPORT_UP, np->state)))
 		return -ENETDOWN;
 
 	if (unlikely(!idpf_xdp_is_prog_ena(vport)))
@@ -547,10 +568,10 @@ idpf_xsk_check_xmit_params(struct idpf_vport *vport, u32 xdpq_idx)
 			       cfg_data->af_xdp_zc_qps)))
 		return -ENXIO;
 
-	if (unlikely(xdpq_idx >= q_grp->num_txq))
+	if (unlikely(xdpq_idx >= vport->num_txq))
 		return -ENXIO;
 
-	if (unlikely(!q_grp->txqs[xdpq_idx]->xsk_pool))
+	if (unlikely(!vport->txqs[xdpq_idx]->xsk_pool))
 		return -ENXIO;
 
 	return 0;
@@ -618,7 +639,7 @@ int idpf_xsk_splitq_async_xmit(struct net_device *netdev, u32 q_id)
 	if (unlikely(ret))
 		goto exit;
 
-	q_vector = vport->dflt_grp.q_grp.txqs[idx]->tx.complq->q_vector;
+	q_vector = vport->txqs[idx]->txq_grp->complq->q_vector;
 
 	idpf_xsk_schedule_napi_for_xmit(vport, q_vector);
 exit:
@@ -669,7 +690,7 @@ int idpf_xsk_singleq_async_xmit(struct net_device *netdev, u32 q_id)
 	if (unlikely(ret))
 		goto exit;
 
-	q_vector = vport->dflt_grp.q_grp.txqs[idx]->q_vector;
+	q_vector = vport->txqs[idx]->q_vector;
 
 	idpf_xsk_schedule_napi_for_xmit(vport, q_vector);
 exit:
@@ -693,7 +714,7 @@ void idpf_xsk_cleanup_xdpq(struct idpf_queue *xdpq)
 #ifdef HAVE_XDP_FRAME_STRUCT
 		if (tx_buf->xdpf)
 #else
-		if (tx_buf->raw_buf)
+		if (tx_buf->raw)
 #endif
 			idpf_clean_xdp_tx_buf(xdpq, tx_buf);
 		else
@@ -702,7 +723,7 @@ void idpf_xsk_cleanup_xdpq(struct idpf_queue *xdpq)
 #ifdef HAVE_XDP_FRAME_STRUCT
 		tx_buf->xdpf = NULL;
 #else
-		tx_buf->raw_buf = NULL;
+		tx_buf->raw = NULL;
 #endif
 
 		ntc++;
@@ -826,7 +847,7 @@ static bool idpf_rx_splitq_buf_hw_alloc_zc_all(struct idpf_queue *rx_bufq,
 			 * idpf_rx_clean_refillq, will have to retry: same as
 			 * non-xsk path.
 			 */
-			idpf_rx_post_buf_refill(&rxq->rx.refillqs[0], nta);
+			idpf_post_buf_refill(&rxq->rx.refillqs[0], nta);
 			nta++;
 		}
 	}
@@ -911,11 +932,10 @@ void idpf_rx_buf_hw_alloc_zc_all(struct idpf_vport *vport,
 		return;
 	}
 
-	for (i = 0; i < q_grp->bufq_per_rxq; i++) {
-		int offset = rxq->idx * q_grp->bufq_per_rxq + i;
+	for (i = 0; i < q_grp->num_bufqs_per_qgrp; i++) {
 		struct idpf_queue *rxbufq;
 
-		rxbufq = &q_grp->bufqs[offset];
+		rxbufq = &rxq->rxq_grp->splitq.bufq_sets[i].bufq;
 		rxbufq->xsk_pool = rxq->xsk_pool;
 		desc_cnt = rxbufq->desc_count - 1;
 		err = idpf_rx_splitq_buf_hw_alloc_zc_all(rxbufq, rxq,
@@ -1103,7 +1123,7 @@ int idpf_rx_splitq_clean_zc(struct idpf_queue *rxq, int budget)
 			total_rx_bytes += pkt_len;
 			total_rx_pkts++;
 			failure |= idpf_rx_buf_hw_alloc_zc(rx_buf, rxq->xsk_pool);
-			idpf_rx_post_buf_refill(refillq, buf_id);
+			idpf_post_buf_refill(refillq, buf_id);
 			ntc = idpf_rx_bump_ntc(rxq, ntc);
 			continue;
 		}
@@ -1122,7 +1142,7 @@ int idpf_rx_splitq_clean_zc(struct idpf_queue *rxq, int budget)
 			break;
 		}
 		failure |= idpf_rx_buf_hw_alloc_zc(rx_buf, rxq->xsk_pool);
-		idpf_rx_post_buf_refill(refillq, buf_id);
+		idpf_post_buf_refill(refillq, buf_id);
 		ntc = idpf_rx_bump_ntc(rxq, ntc);
 
 		/* pad skb if needed (to make valid ethernet frame) */
@@ -1212,7 +1232,7 @@ int idpf_rx_singleq_clean_zc(struct idpf_queue *rxq, int budget)
 		 * isn't used, if the hardware wrote DD then the length will be
 		 * non-zero
 		 */
-#define IDPF_RXD_DD BIT(VIRTCHNL2_RX_BASE_DESC_STATUS_DD_S)
+#define IDPF_RXD_DD VIRTCHNL2_RX_BASE_DESC_STATUS_DD_M
 		if (!idpf_rx_singleq_test_staterr(rx_desc, IDPF_RXD_DD))
 			break;
 		idpf_rx_singleq_extract_fields(rxq, rx_desc, &fields);

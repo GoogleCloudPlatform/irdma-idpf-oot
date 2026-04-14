@@ -252,12 +252,12 @@ static bool irdma_is_lfc_set(struct irdma_config_check *cc, struct irdma_sc_vsi 
 	u32 rx_pause_enable, tx_pause_enable;
 	u8 fn_id = vsi->dev->hmc_fn_id;
 
-	if (irdma_fw_major_ver(vsi->dev) == 2) {
+	if (irdma_fw_major_ver(vsi->dev) == 1) {
+		rx_pause_enable = PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE_0;
+		tx_pause_enable = PRTMAC_HSEC_CTL_TX_PAUSE_ENABLE_0;
+	} else {
 		rx_pause_enable = CNV_PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE_0;
 		tx_pause_enable = CNV_PRTMAC_HSEC_CTL_TX_PAUSE_ENABLE_0;
-	} else {
-		rx_pause_enable = PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE_0;
-		tx_pause_enable = PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE_0;
 	}
 
 #define LFC_ENABLE BIT_ULL(8)
@@ -292,12 +292,12 @@ static bool irdma_is_pfc_set(struct irdma_config_check *cc, struct irdma_sc_vsi 
 	u32 rx_pause_enable, tx_pause_enable;
 	u8 fn_id = vsi->dev->hmc_fn_id;
 
-	if (irdma_fw_major_ver(vsi->dev) == 2) {
+	if (irdma_fw_major_ver(vsi->dev) == 1) {
+		rx_pause_enable = PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE_0;
+		tx_pause_enable = PRTMAC_HSEC_CTL_TX_PAUSE_ENABLE_0;
+	} else {
 		rx_pause_enable = CNV_PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE_0;
 		tx_pause_enable = CNV_PRTMAC_HSEC_CTL_TX_PAUSE_ENABLE_0;
-	} else {
-		rx_pause_enable = PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE_0;
-		tx_pause_enable = PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE_0;
 	}
 
 	pause = (rd32(vsi->dev->hw, rx_pause_enable + 4 * fn_id) >>
@@ -324,6 +324,7 @@ bool irdma_is_config_ok(struct irdma_config_check *cc, struct irdma_sc_vsi *vsi)
 
 #define IRDMA_CWND_NO_FC	0x20
 #define IRDMA_CWND_FC		0x400
+#define IRDMA_CWND_DCQCN_FC	0x80000
 
 #define IRDMA_RTOMIN_NO_FC	0x5
 #define IRDMA_RTOMIN_FC		0x32
@@ -339,8 +340,12 @@ static void irdma_check_flow_ctrl(struct irdma_sc_vsi *vsi, u8 user_prio, u8 tra
 	if (!irdma_is_config_ok(cfg_chk, vsi)) {
 		if (!iwdev->override_rcv_wnd)
 			iwdev->rcv_wnd = IRDMA_RCV_WND_NO_FC;
-		if (!iwdev->override_cwnd)
-			iwdev->roce_cwnd = IRDMA_CWND_NO_FC;
+		if (!iwdev->override_cwnd) {
+			if (iwdev->roce_dcqcn_en)
+				iwdev->roce_cwnd = IRDMA_CWND_DCQCN_FC;
+			else
+				iwdev->roce_cwnd = IRDMA_CWND_NO_FC;
+		}
 		if (!iwdev->override_rtomin)
 			iwdev->roce_rtomin = IRDMA_RTOMIN_NO_FC;
 		if (!iwdev->override_ackcreds)
@@ -356,8 +361,12 @@ static void irdma_check_flow_ctrl(struct irdma_sc_vsi *vsi, u8 user_prio, u8 tra
 	} else {
 		if (!iwdev->override_rcv_wnd)
 			iwdev->rcv_wnd = IRDMA_RCV_WND_FC;
-		if (!iwdev->override_cwnd)
-			iwdev->roce_cwnd = IRDMA_CWND_FC;
+		if (!iwdev->override_cwnd) {
+			if (iwdev->roce_dcqcn_en)
+				iwdev->roce_cwnd = IRDMA_CWND_DCQCN_FC;
+			else
+				iwdev->roce_cwnd = IRDMA_CWND_FC;
+		}
 		if (!iwdev->override_rtomin)
 			iwdev->roce_rtomin = IRDMA_RTOMIN_FC;
 		if (!iwdev->override_ackcreds)

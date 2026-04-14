@@ -114,6 +114,12 @@
 #define IRDMA_AE_ATOMIC_MASK						0x0222
 #define IRDMA_AE_INVALID_REQUEST					0x0223
 #define IRDMA_AE_PCIE_ATOMIC_DISABLE					0x0224
+#define IRDMA_AE_HMC_INVALID_PBLE_INDEX					0x0229
+#define IRDMA_AE_HMC_INVALID_ARP_INDEX					0x022b
+#define IRDMA_AE_HMC_INVALID_AH_INDEX					0x022c
+#define IRDMA_AE_HMC_INVALID_Q1_INDEX					0x022d
+#define IRDMA_AE_HMC_INVALID_XMIT_INDEX					0x022e
+#define IRDMA_AE_HMC_INVALID_RDRESP_INDEX				0x022f
 #define IRDMA_AE_MEM_FLUSH_DISABLE					0x0230
 #define IRDMA_AE_DDP_INVALID_MSN_GAP_IN_MSN				0x0301
 #define IRDMA_AE_DDP_UBE_DDP_MESSAGE_TOO_LONG_FOR_AVAILABLE_BUFFER	0x0303
@@ -128,6 +134,7 @@
 #define IRDMA_AE_ROE_INVALID_RDMA_WRITE_OR_READ_RESP			0x0314
 #define IRDMA_AE_ROCE_RSP_LENGTH_ERROR					0x0316
 #define IRDMA_AE_INVALID_RSN_GAP_IN_RSN					0x0317
+#define IRDMA_ROE_AE_INVALID_RDMA_FLUSH					0x0319
 #define IRDMA_AE_ROCE_REQ_LENGTH_ERROR					0x0318
 #define IRDMA_AE_ROCE_EMPTY_MCG						0x0380
 #define IRDMA_AE_ROCE_BAD_MC_IP_ADDR					0x0381
@@ -160,6 +167,8 @@
 #define IRDMA_AE_REMOTE_QP_CATASTROPHIC					0x0703
 #define IRDMA_AE_LOCAL_QP_CATASTROPHIC					0x0704
 #define IRDMA_AE_RCE_QP_CATASTROPHIC					0x0705
+#define IRDMA_AE_RCE_ADAPTER_CATASTROPHIC				0x0706
+#define IRDMA_AE_LCE_CRC_FUNCTION_CATASTROPHIC				0x0707
 #define IRDMA_AE_QP_SUSPEND_COMPLETE					0x0900
 #define IRDMA_AE_CQP_DEFERRED_COMPLETE					0x0901
 #define IRDMA_AE_ADAPTER_CATASTROPHIC					0x0B0B
@@ -176,8 +185,8 @@ enum irdma_device_caps_const {
 	IRDMA_GATHER_STATS_BUF_SIZE =		1024,
 	IRDMA_MIN_IW_QP_ID =			0,
 	IRDMA_MIN_IW_SRQ_ID =			0,
-	IRDMA_QUERY_FPM_BUF_SIZE =		192,
-	IRDMA_COMMIT_FPM_BUF_SIZE =		192,
+	IRDMA_QUERY_FPM_BUF_SIZE =		200,
+	IRDMA_COMMIT_FPM_BUF_SIZE =		208,
 	IRDMA_MIN_CEQID =			0,
 	IRDMA_MAX_CEQID =			1023,
 	IRDMA_CEQ_MAX_COUNT =			IRDMA_MAX_CEQID + 1,
@@ -482,6 +491,7 @@ struct irdma_wqe_uk_ops {
 				   struct irdma_bind_window *op_info);
 };
 
+bool irdma_uk_cq_empty(struct irdma_cq_uk *cq);
 int irdma_uk_cq_poll_cmpl(struct irdma_cq_uk *cq,
 			  struct irdma_cq_poll_info *info);
 void irdma_uk_cq_request_notification(struct irdma_cq_uk *cq,
@@ -541,7 +551,8 @@ struct irdma_sq_uk_wr_trk_info {
 	u64 wrid;
 	u32 wr_len;
 	u16 quanta;
-	u8 reserved[2];
+	u8 signaled;
+	u8 reserved[1];
 };
 
 struct irdma_qp_quanta {

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2019-2025 Intel Corporation */
+/* Copyright (C) 2019-2026 Intel Corporation */
 
 #ifndef _IDPF_VDCM_H_
 #define _IDPF_VDCM_H_
@@ -34,11 +34,6 @@ struct idpf_vdcm_irq_ctx {
 	char *name;
 };
 
-struct idpf_vdcm_mmap_vma {
-	struct vm_area_struct *vma;
-	struct list_head vma_next;
-};
-
 /**
  * struct idpf_vdcm - Abstraction for VDCM
  *
@@ -65,9 +60,7 @@ struct idpf_vdcm {
 	struct device *parent_dev;
 	struct vfio_group *vfio_group;
 	u8 pci_cfg_space[IDPF_VDCM_CFG_SIZE];
-	struct mutex vma_lock;		/* protects access to vma_list */
 	struct mutex igate;		/* protects access to interrupt */
-	struct list_head vma_list;
 
 	struct mutex ref_lock; /* lock to protect refcnt */
 	int refcnt;

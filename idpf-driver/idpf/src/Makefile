@@ -1,28 +1,30 @@
 # SPDX-License-Identifier: GPL-2.0-only
-# Copyright (C) 2019-2025 Intel Corporation
+# Copyright (C) 2019-2026 Intel Corporation
 
 
 ifneq ($(KERNELRELEASE),)
 # kbuild part of makefile
 #
-# Makefile for the Intel(R) Infrastructure Data Path Function Linux Driver
+# Makefile for Intel(R) Infrastructure Data Path Function Linux Driver
 #
 
 obj-$(CONFIG_IDPF) += idpf.o
 
 idpf-y := \
-	idpf_lib.o \
-	idpf_virtchnl.o \
-	idpf_txrx.o \
+	idpf_controlq.o		\
+	idpf_controlq_setup.o	\
+	idpf_dev.o		\
+	idpf_ethtool.o		\
+	idpf_lib.o		\
+	idpf_main.o		\
+	idpf_txrx.o		\
+	idpf_virtchnl.o 	\
 	idpf_singleq_txrx.o \
-	idpf_ethtool.o \
 	idpf_controlq.o \
 	idpf_idc.o \
-	idpf_controlq_setup.o \
 	idpf_xsk.o \
-	idpf_main.o \
-	idpf_dev.o \
 	idpf_vf_dev.o
+idpf-$(CONFIG_PTP_1588_CLOCK:m=y) += idpf_ptp.o idpf_virtchnl_ptp.o
 idpf-y += kcompat.o
 # Use kcompat DIMLIB if kernel doesn't provide it
 ifndef CONFIG_DIMLIB
@@ -35,7 +37,7 @@ ifneq (${ENABLE_DEVLINK_SUPPORT},)
 idpf-$(CONFIG_NET_DEVLINK:m=y) += idpf_devlink.o
 override ccflags-$(CONFIG_NET_DEVLINK:m=y) += -DDEVLINK_ENABLED
 endif
-idpf-$(CONFIG_PTP_1588_CLOCK:m=y) += idpf_ptp.o
+idpf-$(CONFIG_PTP_1588_CLOCK:m=y) += idpf_ptp.o idpf_virtchnl_ptp.o
 else	# ifneq($(KERNELRELEASE),)
 # normal makefile
 

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2019-2025 Intel Corporation */
+/* Copyright (C) 2019-2026 Intel Corporation */
 
 #ifndef _IDPF_LAN_TXRX_H_
 #define _IDPF_LAN_TXRX_H_
@@ -119,7 +119,7 @@ enum idpf_tx_desc_dtype_value {
 	IDPF_TX_DESC_DTYPE_CTX				= 1,
 	IDPF_TX_DESC_DTYPE_REINJECT_CTX			= 2,
 	IDPF_TX_DESC_DTYPE_FLEX_DATA			= 3,
-	IDPF_TX_DESC_DTYPE_FLEX_CTX			= 4,
+	IDPF_TX_DESC_DTYPE_FLEX_L2TAG1_CTX		= 4,
 	IDPF_TX_DESC_DTYPE_FLEX_TSO_CTX			= 5,
 	IDPF_TX_DESC_DTYPE_FLEX_TSYN_L2TAG1		= 6,
 	IDPF_TX_DESC_DTYPE_FLEX_L2TAG1_L2TAG2		= 7,
@@ -133,6 +133,12 @@ enum idpf_tx_desc_dtype_value {
 	/* DESC_DONE - HW has completed write-back of descriptor */
 	IDPF_TX_DESC_DTYPE_DESC_DONE			= 15,
 };
+
+/* Fields of descriptor type:
+ * IDPF_TX_DESC_DTYPE_FLEX_L2TAG1_CTX
+ */
+#define IDPF_TX_FLEX_CTX_DTYPE_M                       GENMASK_ULL(4, 0)
+#define IDPF_TX_FLEX_CTX_L2TAG1_M                      GENMASK_ULL(31, 16)
 
 enum idpf_tx_ctx_desc_cmd_bits {
 	IDPF_TX_CTX_DESC_TSO		= 0x01,
@@ -271,12 +277,13 @@ struct idpf_flex_tx_sched_desc {
  * field
  */
 enum idpf_tx_flex_ctx_desc_cmd_bits {
-	IDPF_TX_FLEX_CTX_DESC_CMD_TSO			= 0x0020,
-	IDPF_TX_FLEX_CTX_DESC_CMD_TSYN_EN		= 0x0040,
-	IDPF_TX_FLEX_CTX_DESC_CMD_L2TAG2		= 0x0080,
-	IDPF_TX_FLEX_CTX_DESC_CMD_SWTCH_UPLNK		= 0x0200, /* 2 bits */
-	IDPF_TX_FLEX_CTX_DESC_CMD_SWTCH_LOCAL		= 0x0400, /* 2 bits */
-	IDPF_TX_FLEX_CTX_DESC_CMD_SWTCH_TARGETVSI	= 0x0600, /* 2 bits */
+	IDPF_TX_FLEX_CTX_DESC_CMD_TSO			= BIT(5),
+	IDPF_TX_FLEX_CTX_DESC_CMD_TSYN_EN		= BIT(6),
+	IDPF_TX_FLEX_CTX_DESC_CMD_L2TAG2		= BIT(7),
+	IDPF_TX_FLEX_CTX_DESC_CMD_SWTCH_UPLNK		= BIT(9),
+	IDPF_TX_FLEX_CTX_DESC_CMD_SWTCH_LOCAL		= BIT(10),
+	IDPF_TX_FLEX_CTX_DESC_CMD_SWTCH_TARGETVSI	= GENMASK(10, 9),
+	IDPF_TX_FLEX_CTX_DESC_CMD_L2TAG1		= BIT(14),
 };
 
 /* Standard flex descriptor TSO context quad word */
@@ -309,15 +316,11 @@ union idpf_flex_tx_ctx_desc {
 		} qw1;
 	} tsyn;
 
-	/* DTYPE = IDPF_TX_DESC_DTYPE_FLEX_CTX (0x04) */
+	/* DTYPE = IDPF_TX_DESC_DTYPE_FLEX_L2TAG1_CTX (0x04) */
 	struct {
-		u8 qw0_flex[8];
-		struct {
-			__le16 cmd_dtype;
-			__le16 l2tag1;
-			u8 qw1_flex[4];
-		} qw1;
-	} gen;
+		__le64 qw0;
+		__le64 qw1;
+	};
 
 	/* DTYPE = IDPF_TX_DESC_DTYPE_FLEX_TSO_CTX (0x05) */
 	struct {

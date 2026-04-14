@@ -6,7 +6,9 @@
 #ifndef LINUX_VERSION_CODE
 #include <linux/version.h>
 #else
-#define KERNEL_VERSION(a, b, c) (((a) << 16) + ((b) << 8) + (c))
+#ifndef KERNEL_VERSION
+#define KERNEL_VERSION(a, b, c) (((a) << 16) + ((b) << 8) + ((c) > 255 ? 255 : (c)))
+#endif
 #endif
 
 #if defined(RHEL_RELEASE_CODE)
@@ -128,7 +130,9 @@
 #endif
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 21)
-#if SLE_LOCALVERSION_CODE >= SLE_LOCALVERSION(150600ULL, 0, 0)
+#if SLE_LOCALVERSION_CODE >= SLE_LOCALVERSION(150700ULL, 0, 0)
+#define SLES_15_SP_7
+#elif SLE_LOCALVERSION_CODE >= SLE_LOCALVERSION(150600ULL, 0, 0)
 #define SLES_15_SP_6
 #elif SLE_LOCALVERSION_CODE >= SLE_LOCALVERSION(150500ULL, 0, 0)
 #define SLES_15_SP_5
@@ -172,7 +176,11 @@
 
 #define UBUNTU_VERSION(a, b, c, d) ((KERNEL_VERSION(a, b, 0) << 8) + (d))
 
-#if (UBUNTU_VERSION_CODE >= UBUNTU_VERSION(6, 8, 0, 22))
+#if (UBUNTU_VERSION_CODE >= UBUNTU_VERSION(6, 14, 0, 24))
+#define UBUNTU_240403
+#elif (UBUNTU_VERSION_CODE >= UBUNTU_VERSION(6, 11, 0, 11))
+#define UBUNTU_240402
+#elif (UBUNTU_VERSION_CODE >= UBUNTU_VERSION(6, 8, 0, 22))
 #define UBUNTU_2404
 #elif (UBUNTU_VERSION_CODE >= UBUNTU_VERSION(5, 15, 0, 25))
 #define UBUNTU_2204

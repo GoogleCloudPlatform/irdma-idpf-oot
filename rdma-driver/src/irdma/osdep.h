@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB */
-/* Copyright (c) 2015 - 2022 Intel Corporation */
+/* Copyright (c) 2015 - 2025 Intel Corporation */
 #ifndef IRDMA_OSDEP_H
 #define IRDMA_OSDEP_H
 
@@ -41,12 +41,14 @@
  * it had to be here.
  * The two #if checks implements fallthrough definition for kernels < 5.4
  * The first check is for new compiler, GCC >= 5.0.  If code in compiler_attributes.h
- * is not invoked and compiler supports  __has_attribute.
+ * is not invoked and compiler supports  __has_attribute and fallthrough attribute.
  * If fallthrough is not defined after the first check, the second check against fallthrough
  * will define the macro for the older compiler.
  */
 #if !defined(fallthrough) && !defined(__GCC4_has_attribute___noclone__) && defined(__has_attribute)
+#if __has_attribute(__fallthrough__)
 # define fallthrough __attribute__((__fallthrough__))
+#endif
 #endif
 #ifndef fallthrough
 # define fallthrough do {} while (0)

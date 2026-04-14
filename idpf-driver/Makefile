@@ -2,6 +2,18 @@
 # Copyright (C) 2021 Intel Corporation
 
 TARGETS := idpf auxiliary
+VERSION := 1.0.2
+
+# Shortcut version target
+ifneq ($(filter version,${MAKECMDGOALS}),)
+.PHONY: ${MAKECMDGOALS}
+version:
+	@echo ${VERSION}
+
+$(filter-out version,${MAKECMDGOALS}):
+	@true
+
+else # version target handling
 ifneq (${KERNELRELEASE},)
 # Kbuild part of makefile
 obj-y := $(strip $(addsuffix /src/,${TARGETS}))
@@ -143,5 +155,7 @@ uninstall:
 .PHONY: clean
 clean:
 	@${MAKE} -C ${KSRC} M=$$PWD clean
+	@rm -f kcompat_generated_defs.h
 
 endif # ifneq (${KERNELRELEASE},)
+endif # version target handling

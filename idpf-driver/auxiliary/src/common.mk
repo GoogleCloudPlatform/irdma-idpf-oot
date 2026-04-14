@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-# Copyright (C) 2019-2025 Intel Corporation
+# Copyright (C) 2019-2026 Intel Corporation
 
 #
 # common Makefile rules useful for out-of-tree Linux driver builds
@@ -272,6 +272,7 @@ endif
 endif
 endif
 
+EXTRA_CFLAGS += -std=gnu11
 EXTRA_CFLAGS += ${CFLAGS_EXTRA}
 
 # get the kernel version - we use this to find the correct install path

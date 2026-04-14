@@ -237,6 +237,7 @@ static bool pf_valid_hmc_rsrc_type(u8 hw_rev, u16 obj_type)
 		num_rsrcs = ARRAY_SIZE(hmc_rsrc_types_gen2);
 		break;
 	case IRDMA_GEN_3:
+	case IRDMA_GEN_4:
 		valid_rsrcs = hmc_rsrc_types_gen3;
 		num_rsrcs = ARRAY_SIZE(hmc_rsrc_types_gen3);
 		break;
@@ -1066,8 +1067,8 @@ int irdma_vchnl_req_get_reg_layout(struct irdma_sc_dev *dev)
 				(hw_addr + reg_array[rindex].reg_offset +
 				 db_page_offset);
 
-		ibdev_dbg(to_ibdev(dev), "VIRT: hw_regs[%d] %llx\n", reg_idx,
-			  (u64)dev->hw_regs[reg_idx]);
+		ibdev_dbg(to_ibdev(dev), "VIRT: hw_regs[%d] %lx\n", reg_idx,
+			  (uintptr_t)dev->hw_regs[reg_idx]);
 	}
 
 	if (!regfld_array)

@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2019-2025 Intel Corporation */
+/* Copyright (C) 2019-2026 Intel Corporation */
 
 #include "idpf.h"
 #include "idpf_lan_vf_regs.h"
+#include "idpf_virtchnl.h"
 
 /* LAN driver does not own all the BAR0 address space. This results in 2 BAR0
  * regions for VF device and the driver should map each region separately.
@@ -37,22 +38,6 @@ static const struct idpf_ctlq_reg idpf_vdev_rx_regs = {
 		.bal = VDEV_MBX_ARQBAL
 };
 
-static const struct idpf_ctlq_reg idpf_vf_tx_regs = {
-		.head = VF_ATQH,
-		.tail = VF_ATQT,
-		.len = VF_ATQLEN,
-		.bah = VF_ATQBAH,
-		.bal = VF_ATQBAL
-};
-
-static const struct idpf_ctlq_reg idpf_vf_rx_regs = {
-		.head = VF_ARQH,
-		.tail = VF_ARQT,
-		.len = VF_ARQLEN,
-		.bah = VF_ARQBAH,
-		.bal = VF_ARQBAL
-};
-
 /**
  * idpf_vf_ctlq_reg_init - initialize default mailbox registers
  * @hw: pointer to hw struct
@@ -69,22 +54,30 @@ static void idpf_vf_ctlq_reg_init(struct idpf_hw *hw,
 		switch (ccq->type) {
 		case IDPF_CTLQ_TYPE_MAILBOX_TX:
 			/* set head and tail registers in our local struct */
-			if (hw->device_id == IDPF_DEV_ID_VF_SIOV)
+			if (hw->device_id == IDPF_DEV_ID_VF_SIOV) {
 				ccq->reg = idpf_vdev_tx_regs;
-			else
-				ccq->reg = idpf_vf_tx_regs;
-
+			} else {
+				ccq->reg.head = VF_ATQH;
+				ccq->reg.tail = VF_ATQT;
+				ccq->reg.len = VF_ATQLEN;
+				ccq->reg.bah = VF_ATQBAH;
+				ccq->reg.bal = VF_ATQBAL;
+			}
 			ccq->reg.len_mask = VF_ATQLEN_ATQLEN_M;
 			ccq->reg.len_ena_mask = VF_ATQLEN_ATQENABLE_M;
 			ccq->reg.head_mask = VF_ATQH_ATQH_M;
 			break;
 		case IDPF_CTLQ_TYPE_MAILBOX_RX:
 			/* set head and tail registers in our local struct */
-			if (hw->device_id == IDPF_DEV_ID_VF_SIOV)
+			if (hw->device_id == IDPF_DEV_ID_VF_SIOV) {
 				ccq->reg = idpf_vdev_rx_regs;
-			else
-				ccq->reg = idpf_vf_rx_regs;
-
+			} else {
+				ccq->reg.head = VF_ARQH;
+				ccq->reg.tail = VF_ARQT;
+				ccq->reg.len = VF_ARQLEN;
+				ccq->reg.bah = VF_ARQBAH;
+				ccq->reg.bal = VF_ARQBAL;
+			}
 			ccq->reg.len_mask = VF_ARQLEN_ARQLEN_M;
 			ccq->reg.len_ena_mask = VF_ARQLEN_ARQENABLE_M;
 			ccq->reg.head_mask = VF_ARQH_ARQH_M;

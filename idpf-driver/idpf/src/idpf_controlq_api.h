@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2019-2025 Intel Corporation */
+/* Copyright (C) 2019-2026 Intel Corporation */
 
 #ifndef _IDPF_CONTROLQ_API_H_
 #define _IDPF_CONTROLQ_API_H_
@@ -99,7 +99,7 @@ struct idpf_ctlq_info {
 
 	enum idpf_ctlq_type cq_type;
 	int q_id;
-	struct mutex cq_lock;		/* queue lock
+	spinlock_t cq_lock;		/* queue lock
 					 * idpf_lock is defined in OSdep.h
 					 */
 	/* used for interrupt processing */

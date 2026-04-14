@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB */
-/* Copyright (c) 2020 - 2022 Intel Corporation */
+/* Copyright (c) 2020 - 2025 Intel Corporation */
 #ifndef ORACLE_KCOMPAT_H
 #define ORACLE_KCOMPAT_H
 
@@ -109,6 +109,8 @@ void irdma_dealloc_pd(struct ib_pd *ibpd, struct ib_udata *udata);
 
 /* REREG MR  */
 #define REREG_MR_VER_1
+
+#define REG_USER_MR_VER_1
 
 #endif /* ORACLE_KCOMPAT_H */
 

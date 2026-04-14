@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB
 /* Copyright (c) 2015 - 2024 Intel Corporation */
 #include "main.h"
+
 /* TODO: Adding this here is not ideal. Can we remove this warning now? */
 #include "icrdma_hw.h"
 #define DRV_VER_MAJOR 0
@@ -409,10 +410,12 @@ static void irdma_free_all_vf_rsrc(struct irdma_sc_dev *dev)
 	}
 }
 
-static void irdma_iidc_event_handler(struct iidc_core_dev_info *cdev_info, struct iidc_event *event)
+static void irdma_iidc_event_handler(struct iidc_core_dev_info *cdev_info,
+				     struct iidc_event *event)
 {
-	struct irdma_device *iwdev = dev_get_drvdata(&cdev_info->adev->dev);
 	struct irdma_l2params l2params = {};
+	struct irdma_device *iwdev = dev_get_drvdata(&cdev_info->adev->dev);
+
 
 	if (!iwdev || iwdev->rf->reset)
 		return;
@@ -458,7 +461,8 @@ static void irdma_iidc_event_handler(struct iidc_core_dev_info *cdev_info, struc
 
 		irdma_fill_qos_info(&l2params, &cdev_info->qos_info);
 		if (iwdev->rf->protocol_used != IRDMA_IWARP_PROTOCOL_ONLY)
-			iwdev->dcb_vlan_mode = l2params.num_tc > 1 && !l2params.dscp_mode;
+			iwdev->dcb_vlan_mode =
+				l2params.num_tc > 1 && !l2params.dscp_mode;
 		if (iwdev->rf->sc_dev.privileged)
 			irdma_check_fc_for_tc_update(&iwdev->vsi, &l2params);
 		irdma_change_l2params(&iwdev->vsi, &l2params);
@@ -602,7 +606,6 @@ static void irdma_lan_unregister_qset(struct irdma_sc_vsi *vsi,
 	if (cdev_info->ops->free_res(cdev_info, &qset))
 		ibdev_dbg(&iwdev->ibdev, "WS: LAN free_res for rdma qset failed.\n");
 }
-
 void irdma_cleanup_dead_qps(struct irdma_sc_vsi *vsi)
 {
 	struct irdma_sc_qp *qp = NULL;
@@ -651,13 +654,17 @@ static void irdma_poll_cq3(struct irdma_pci_f *rf)
 		cq->ibcq.comp_handler(&cq->ibcq, cq->ibcq.cq_context);
 }
 
+#define LOW_FREQ_MICROS  1000
+#define HIGH_FREQ_MICROS 25
+
 static int poll_thread(void *context)
 {
 	struct irdma_pci_f *rf = context;
+	u32 sleep_micros = LOW_FREQ_MICROS;
 
 	msleep(200);
 	do {
-		msleep(1);
+		usleep_range(sleep_micros, sleep_micros + HIGH_FREQ_MICROS);
 		if (rf->sc_dev.hw_wa & AEQ_POLL) {
 			irdma_process_aeq(rf);
 			continue;
@@ -676,6 +683,24 @@ static int poll_thread(void *context)
 				irdma_process_ceq(rf, rf->ceqlist);
 			irdma_process_aeq(rf);
 		}
+		if (atomic_read(&rf->ceq0_wa_enable)) {
+			struct irdma_sc_cq *ccq = &rf->ccq.sc_cq;
+
+			/* If there is a backlog, poll faster. The high freq
+			 * delay is just enough to allow the user to react to a
+			 * completed request and issue another.
+			 */
+			if (READ_ONCE(rf->sc_dev.cqp->requested_ops) !=
+			    atomic64_read(&rf->sc_dev.cqp->completed_ops)) {
+				sleep_micros = HIGH_FREQ_MICROS;
+			} else {
+				sleep_micros = LOW_FREQ_MICROS;
+				continue;
+			}
+
+			irdma_process_ceq(rf, rf->ceqlist);
+			irdma_cqp_ce_handler(rf, ccq);
+		}
 	} while (!kthread_should_stop());
 
 	return 0;
@@ -692,6 +717,7 @@ static void irdma_remove(struct auxiliary_device *aux_dev)
 							    adev);
 	struct iidc_core_dev_info *cdev_info = iidc_adev->cdev_info;
 	struct irdma_device *iwdev = auxiliary_get_drvdata(aux_dev);
+
 	u8 rdma_ver = iwdev->rf->rdma_ver;
 
 	if (rdma_ver == IRDMA_GEN_2 && !iwdev->rf->ftype &&
@@ -779,7 +805,8 @@ static int irdma_vchnl_init(struct irdma_device *iwdev,
 	return 0;
 }
 
-static int irdma_fill_device_info(struct irdma_device *iwdev, struct iidc_core_dev_info *cdev_info)
+static int irdma_fill_device_info(struct irdma_device *iwdev,
+				  struct iidc_core_dev_info *cdev_info)
 {
 	struct irdma_pci_f *rf = iwdev->rf;
 	int err;
@@ -787,9 +814,9 @@ static int irdma_fill_device_info(struct irdma_device *iwdev, struct iidc_core_d
 	rf->sc_dev.hw = &rf->hw;
 	rf->iwdev = iwdev;
 	rf->cdev = cdev_info;
-	rf->hw.hw_addr = cdev_info->hw_addr;
 	rf->pcidev = cdev_info->pdev;
 	rf->hw.device = &rf->pcidev->dev;
+	rf->hw.hw_addr = cdev_info->hw_addr;
 	rf->ftype = cdev_info->ftype;
 	rf->msix_count = cdev_info->msix_count;
 	rf->msix_entries = cdev_info->msix_entries;
@@ -817,16 +844,16 @@ static int irdma_fill_device_info(struct irdma_device *iwdev, struct iidc_core_d
 		rf->gen_ops.unregister_qset = irdma_lan_unregister_qset;
 	}
 
-	if (rf->rdma_ver >= IRDMA_GEN_3) {
-		if (cdev_info->pdev->revision < MEV_PCI_VER_C0) {
+	if (rf->rdma_ver == IRDMA_GEN_3 && cdev_info->pdev->revision < MEV_PCI_VER_C0) {
 #define IRDMA_MEV_B0_RDMA_KEY	0xb
-			if (rdma_key != IRDMA_MEV_B0_RDMA_KEY) {
-				dev_err(rf->hw.device,
-					"IRDMA: Invalid RDMA key used for B0\n");
-				return -EINVAL;
-			}
+		if (rdma_key != IRDMA_MEV_B0_RDMA_KEY) {
+			dev_err(rf->hw.device,
+				"IRDMA: Invalid RDMA key used for B0\n");
+			return -EINVAL;
 		}
+	}
 
+	if (rf->rdma_ver >= IRDMA_GEN_3) {
 		mev_enable_hw_wa(&rf->sc_dev, hw_type_wa, wa_mem_pages,
 				 hw_wa_bitmask, host_mem_mrte);
 		rf->sc_dev.rrf_multiplier = rrf_m;
@@ -850,6 +877,7 @@ static int irdma_fill_device_info(struct irdma_device *iwdev, struct iidc_core_d
 	irdma_set_rf_user_cfg_params(rf);
 
 	mutex_init(&iwdev->ah_tbl_lock);
+	spin_lock_init(&iwdev->ah_nosleep_tbl_lock);
 
 	iwdev->netdev = cdev_info->netdev;
 	iwdev->vsi_num = cdev_info->vport_id;
@@ -869,6 +897,21 @@ static int irdma_fill_device_info(struct irdma_device *iwdev, struct iidc_core_d
 		iwdev->roce_dcqcn_en = iwdev->rf->dcqcn_ena;
 		iwdev->roce_mode = true;
 	}
+
+	if (rf->rdma_ver == IRDMA_GEN_3) {
+		dev_info(rf->hw.device, "%s: feature_cap 0x%016llx\n",
+			 __func__, iwdev->rf->sc_dev.vc_caps.feature_cap);
+		if (FIELD_GET(IRDMA_NEED_PERIODIC_FLUSH_BIT, iwdev->rf->sc_dev.vc_caps.feature_cap)) {
+			dev_info(rf->hw.device, "%s: periodic flush enabled\n", __func__);
+			iwdev->rf->sc_dev.periodic_flush = true;
+		} else {
+			dev_info(rf->hw.device, "%s: periodic flush disabled\n", __func__);
+			iwdev->rf->sc_dev.periodic_flush = false;
+		}
+	} else {
+		iwdev->rf->sc_dev.periodic_flush = false;
+	}
+
 	return 0;
 }
 
@@ -893,18 +936,17 @@ static int irdma_probe(struct auxiliary_device *aux_dev, const struct auxiliary_
 							    struct iidc_auxiliary_dev,
 							    adev);
 	struct iidc_core_dev_info *cdev_info = iidc_adev->cdev_info;
+	struct irdma_l2params l2params = {};
 	struct irdma_device *iwdev;
 	struct irdma_pci_f *rf;
-	struct irdma_l2params l2params = {};
 	int err;
 	struct irdma_handler *hdl;
 
 	if (cdev_info->ver.major != IIDC_MAJOR_VER) {
-		pr_err("version mismatch:\n");
-		pr_err("expected major ver %d, caller specified major ver %d\n",
-		       IIDC_MAJOR_VER, cdev_info->ver.major);
-		pr_err("expected minor ver %d, caller specified minor ver %d\n",
-		       IIDC_MINOR_VER, cdev_info->ver.minor);
+		pr_info("irdma: RDMA/LAN interface version mismatch (Expected %0d.%0d Received %0d.%0d). Unable to initialize RDMA.\n",
+			IIDC_MAJOR_VER, IIDC_MINOR_VER,
+			cdev_info->ver.major, cdev_info->ver.minor);
+		pr_info("irdma: Please update both LAN and RDMA drivers from same release for interface compatibility\n");
 		return -EINVAL;
 	}
 	if (cdev_info->ver.minor != IIDC_MINOR_VER)

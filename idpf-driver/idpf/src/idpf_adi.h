@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2019-2025 Intel Corporation */
+/* Copyright (C) 2019-2026 Intel Corporation */
 
 #ifndef _IDPF_ADI_H_
 #define _IDPF_ADI_H_
@@ -29,7 +29,7 @@ int idpf_adi_core_init(struct idpf_adapter *adapter);
 #endif /* CONFIG_VFIO_MDEV && HAVE_PASID_SUPPORT */
 
 struct idpf_adi_info {
-	struct idpf_adi_priv **priv_info;
+	struct xarray priv_info;
 	u16 max_adi_cnt;
 	u16 curr_adi_cnt;
 	bool vdcm_init_ok;

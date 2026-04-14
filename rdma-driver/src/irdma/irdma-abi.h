@@ -143,4 +143,12 @@ struct irdma_create_ah_resp {
 	__u32 ah_id;
 	__u8 rsvd[4];
 };
+
+#define IRDMA_MMAP_CMD_SHIFT	8
+#define IRDMA_MMAP_CMD_MASK	0xff
+
+enum irdma_mmap_cmd {
+	IRDMA_MMAP_DEFAULT	= 0,
+	IRDMA_MMAP_GET_KMEM	= 1,
+};
 #endif /* IRDMA_ABI_H */

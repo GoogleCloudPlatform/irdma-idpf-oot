@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2019-2025 Intel Corporation */
+/* Copyright (C) 2019-2026 Intel Corporation */
 
 #include "kcompat.h"
 
@@ -1342,70 +1342,6 @@ int __kc_pcie_capability_clear_word(struct pci_dev *dev, int pos,
 
 /*****************************************************************************/
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(3,10,0) )
-#ifdef HAVE_FDB_OPS
-#ifdef USE_CONST_DEV_UC_CHAR
-int __kc_ndo_dflt_fdb_add(struct ndmsg *ndm, struct nlattr *tb[],
-			  struct net_device *dev, const unsigned char *addr,
-			  u16 flags)
-#else
-int __kc_ndo_dflt_fdb_add(struct ndmsg *ndm, struct net_device *dev,
-			  unsigned char *addr, u16 flags)
-#endif
-{
-	int err = -EINVAL;
-
-	/* If aging addresses are supported device will need to
-	 * implement its own handler for this.
-	 */
-	if (ndm->ndm_state && !(ndm->ndm_state & NUD_PERMANENT)) {
-		pr_info("%s: FDB only supports static addresses\n", dev->name);
-		return err;
-	}
-
-	if (is_unicast_ether_addr(addr) || is_link_local_ether_addr(addr))
-		err = dev_uc_add_excl(dev, addr);
-	else if (is_multicast_ether_addr(addr))
-		err = dev_mc_add_excl(dev, addr);
-
-	/* Only return duplicate errors if NLM_F_EXCL is set */
-	if (err == -EEXIST && !(flags & NLM_F_EXCL))
-		err = 0;
-
-	return err;
-}
-
-#ifdef USE_CONST_DEV_UC_CHAR
-#ifdef HAVE_FDB_DEL_NLATTR
-int __kc_ndo_dflt_fdb_del(struct ndmsg *ndm, struct nlattr *tb[],
-			  struct net_device *dev, const unsigned char *addr)
-#else
-int __kc_ndo_dflt_fdb_del(struct ndmsg *ndm, struct net_device *dev,
-			  const unsigned char *addr)
-#endif
-#else
-int __kc_ndo_dflt_fdb_del(struct ndmsg *ndm, struct net_device *dev,
-			  unsigned char *addr)
-#endif
-{
-	int err = -EINVAL;
-
-	/* If aging addresses are supported device will need to
-	 * implement its own handler for this.
-	 */
-	if (!(ndm->ndm_state & NUD_PERMANENT)) {
-		pr_info("%s: FDB only supports static addresses\n", dev->name);
-		return err;
-	}
-
-	if (is_unicast_ether_addr(addr) || is_link_local_ether_addr(addr))
-		err = dev_uc_del(dev, addr);
-	else if (is_multicast_ether_addr(addr))
-		err = dev_mc_del(dev, addr);
-
-	return err;
-}
-
-#endif /* HAVE_FDB_OPS */
 #ifdef CONFIG_PCI_IOV
 int __kc_pci_vfs_assigned(struct pci_dev __maybe_unused *dev)
 {
@@ -1712,7 +1648,7 @@ int __kc_pci_enable_msix_range(struct pci_dev *dev, struct msix_entry *entries,
 }
 #endif /* 3.14.0 */
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,15,0))
+#ifdef NEED_DEVM_KSTRDUP
 char *_kc_devm_kstrdup(struct device *dev, const char *s, gfp_t gfp)
 {
 	size_t size;
@@ -1727,7 +1663,9 @@ char *_kc_devm_kstrdup(struct device *dev, const char *s, gfp_t gfp)
 		memcpy(buf, s, size);
 	return buf;
 }
+#endif /* NEED_DEVM_KSTRDUP */
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3,15,0))
 void __kc_netdev_rss_key_fill(void *buffer, size_t len)
 {
 	/* Set of random keys generated using kernel random number generator */
@@ -1888,7 +1826,10 @@ void __kc_dev_addr_unsync_dev(struct dev_addr_list **list, int *count,
 }
 #endif /* NETDEV_HW_ADDR_T_MULTICAST  */
 #endif /* HAVE_SET_RX_MODE */
-void *__kc_devm_kmemdup(struct device *dev, const void *src, size_t len,
+#endif /* 3.16.0 */
+
+#ifdef NEED_DEVM_KMEMDUP
+void *_kc_devm_kmemdup(struct device *dev, const void *src, size_t len,
 			gfp_t gfp)
 {
 	void *p;
@@ -1899,7 +1840,7 @@ void *__kc_devm_kmemdup(struct device *dev, const void *src, size_t len,
 
 	return p;
 }
-#endif /* 3.16.0 */
+#endif /* NEED_DEVM_KMEMDUP */
 
 /******************************************************************************/
 #if ((LINUX_VERSION_CODE < KERNEL_VERSION(3,17,0)) && \

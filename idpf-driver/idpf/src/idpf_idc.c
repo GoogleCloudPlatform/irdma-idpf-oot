@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2019-2025 Intel Corporation */
+/* Copyright (C) 2019-2026 Intel Corporation */
 
 #include "idpf.h"
+#include "idpf_virtchnl.h"
 
 static DEFINE_IDA(idpf_idc_ida);
 
@@ -353,12 +354,13 @@ static void idpf_unplug_aux_dev(struct idpf_rdma_data *rdma_data)
 	if (!rdma_data->cdev_info)
 		return;
 
+	ida_free(&idpf_idc_ida, rdma_data->aux_idx);
+
 	adev = rdma_data->cdev_info->adev;
 	auxiliary_device_delete(adev);
 	auxiliary_device_uninit(adev);
 	adev = NULL;
 
-	ida_free(&idpf_idc_ida, rdma_data->aux_idx);
 }
 
 /**

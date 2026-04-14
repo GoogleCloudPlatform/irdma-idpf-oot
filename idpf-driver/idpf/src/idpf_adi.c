@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2019-2025 Intel Corporation */
+/* Copyright (C) 2019-2026 Intel Corporation */
 
 #include "idpf.h"
+#include "idpf_virtchnl.h"
 #include "idpf_lan_pf_regs.h"
 #include "idpf_lan_vf_regs.h"
 
@@ -45,15 +46,9 @@ static int idpf_adi_reset(struct idpf_adi *adi)
 void idpf_notify_adi_reset(struct idpf_adapter *adapter, u16 adi_id,
 			   bool reset)
 {
-	struct device *dev = idpf_adapter_to_dev(adapter);
 	struct idpf_adi_priv *priv;
 
-	if (adi_id >= adapter->adi_info.max_adi_cnt) {
-		dev_err(dev, "Invalid ADI id (%d) received\n", adi_id);
-		return;
-	}
-
-	priv = adapter->adi_info.priv_info[adi_id];
+	priv = xa_load(&adapter->adi_info.priv_info, adi_id);
 	if (reset)
 		priv->reset_state = IDPF_ADI_RESET_COMPLETED;
 	else
@@ -174,56 +169,63 @@ static int idpf_adi_qid_reg_init(struct idpf_adi *adi,
  * Prepare vector chunks which will be sent as part of Create ADI
  * Returns 0 on success, negative if all the vectors are not initialized.
  */
-static int idpf_adi_prep_vec_chunks(struct idpf_adi *adi,
-				    struct virtchnl2_non_flex_create_adi
-				    *vc_cadi)
+static int
+idpf_adi_prep_vec_chunks(struct idpf_adi *adi,
+			 struct virtchnl2_non_flex_create_adi *vc_cadi)
 {
 	struct idpf_adi_priv *priv = idpf_get_adi_priv(adi);
+	u16 *vec_indexes = priv->vec_info.vec_indexes;
 	int num_vecs = priv->vec_info.num_vectors;
-	int vecid_filled = 0, vec_index = 0;
-	int i = 0, j = 0;
+	struct msix_entry *msix_entries;
+	int vchunk_index = 0;
+	int evv_index = 0;
+	int i;
 
-	/* Take out vector_index and num_vecs for mailbox in ADI */
-	vec_index++;
-	num_vecs--;
-	while (vecid_filled < num_vecs) {
-		int index, each_chunk_vectors = 1;
-		int next_phys_vec, phys_vec;
+	msix_entries = priv->adapter->msix_entries;
+	/* Take out 1st evv for mailbox in ADI */
+	evv_index++;
 
-		/* Start for data queues */
-		index = priv->vec_info.vec_indexes[vec_index + vecid_filled];
-		phys_vec = priv->adapter->msix_entries[index].entry;
-		vc_cadi->vchunks.vchunks[j].start_vector_id =
-			cpu_to_le16(phys_vec);
-
-		vc_cadi->vchunks.vchunks[j].start_evv_id =
-				cpu_to_le16(vecid_filled + 1);
-		priv->vec_info.data_q_vec_ids[i] = phys_vec;
-		/* increment for storing next data_q_vec_ids */
-		i++;
-		/* Loop for building out each chunk */
-		while (1) {
-			phys_vec++;
-			vecid_filled++;
-			index = priv->vec_info.vec_indexes[vec_index +
-							   vecid_filled];
-			next_phys_vec =
-				priv->adapter->msix_entries[index].entry;
-			if (vecid_filled != num_vecs &&
-			    phys_vec == next_phys_vec) {
-				each_chunk_vectors++;
-				priv->vec_info.data_q_vec_ids[i] = phys_vec;
-				i++;
-				continue;
-			}
-			break;
-		}
-		vc_cadi->vchunks.vchunks[j].num_vectors =
-			cpu_to_le16(each_chunk_vectors);
-		if (vecid_filled < num_vecs)
-			j++;
+	if (num_vecs - evv_index <= 0 ||
+	    num_vecs - evv_index >= IDPF_MAX_ADI_Q_COUNT) {
+		dev_err(idpf_adapter_to_dev(priv->adapter),
+			"Invalid vector number %d", num_vecs);
+		return -EINVAL;
 	}
-	vc_cadi->vchunks.num_vchunks = cpu_to_le16(++j);
+
+	for (i = evv_index; i < num_vecs; i++) {
+		int phys_vec = msix_entries[vec_indexes[i]].entry;
+		/* data_q_vec_ids starts with index 0 */
+		int data_q_vec_index = i - evv_index;
+
+		priv->vec_info.data_q_vec_ids[data_q_vec_index] = phys_vec;
+	}
+
+	while (evv_index < num_vecs) {
+		int l, r;
+
+		/* Search for continous physical vectors */
+		l = evv_index;
+		r = evv_index;
+		while ((r + 1) < num_vecs &&
+		       (msix_entries[vec_indexes[r]].entry + 1 ==
+				msix_entries[vec_indexes[r + 1]].entry))
+			r++;
+
+		/* Fill virtchnl payload */
+		vc_cadi->vchunks.vchunks[vchunk_index].start_vector_id =
+				cpu_to_le16(msix_entries[vec_indexes[l]].entry);
+		vc_cadi->vchunks.vchunks[vchunk_index].start_evv_id =
+				cpu_to_le16(l);
+		vc_cadi->vchunks.vchunks[vchunk_index].num_vectors =
+				cpu_to_le16(r - l + 1);
+
+		dev_dbg(idpf_adapter_to_dev(priv->adapter),
+			"vchunks[%d] start_vector_id: 0x%x, start_evv_id: 0x%x, num_vectors: 0x%x",
+			vchunk_index, msix_entries[vec_indexes[l]].entry, l, r - l + 1);
+		vchunk_index++;
+		evv_index = r + 1;
+	}
+	vc_cadi->vchunks.num_vchunks = cpu_to_le16(vchunk_index);
 
 	return 0;
 }
@@ -336,7 +338,11 @@ static int idpf_adi_create(struct idpf_adi *adi, u32 pasid)
 	vchnl_adi->mbx_id = cpu_to_le16(USE_HW_MBX_ID);
 	vchnl_adi->pasid = cpu_to_le32(pasid);
 	vchnl_adi->adi_index = cpu_to_le16(priv->adi_index);
-	idpf_adi_prep_vec_chunks(adi, vchnl_adi);
+	err = idpf_adi_prep_vec_chunks(adi, vchnl_adi);
+	if (err) {
+		dev_err(dev, "Prepare for adi vector chunks failed: %d\n", err);
+		goto dealloc_vec;
+	}
 
 	err = idpf_send_create_adi_msg(adapter, vchnl_adi);
 	if (err) {
@@ -352,13 +358,7 @@ static int idpf_adi_create(struct idpf_adi *adi, u32 pasid)
 
 	priv->mbx_id = le16_to_cpu(vchnl_adi->mbx_id);
 	priv->adi_id = le16_to_cpu(vchnl_adi->adi_id);
-	if (priv->adi_id >= adapter->adi_info.max_adi_cnt) {
-		dev_err(dev,
-			"Invalid ADI id (%d) received in Create ADI message\n",
-			priv->adi_id);
-		err = -ENODEV;
-		goto destroy_adi;
-	}
+
 	err = idpf_adi_qid_reg_init(adi, vchnl_adi);
 	if (err) {
 		dev_err(dev, "Failed to allocate Queue IDs for ADI %d\n",
@@ -366,14 +366,18 @@ static int idpf_adi_create(struct idpf_adi *adi, u32 pasid)
 		goto destroy_adi;
 	}
 
-	if (adapter->adi_info.priv_info[priv->adi_id]) {
+	if (xa_load(&adapter->adi_info.priv_info, priv->adi_id)) {
 		dev_err(dev, "Duplicate ADI id (%d) received in Create ADI message\n",
 			priv->adi_id);
 		err = -EINVAL;
 		goto destroy_adi;
 	}
 
-	adapter->adi_info.priv_info[priv->adi_id] = priv;
+	err = xa_err(xa_store(&adapter->adi_info.priv_info, priv->adi_id, priv,
+			      GFP_KERNEL));
+	if (err)
+		goto destroy_adi;
+
 	priv->reset_state = IDPF_ADI_RESET_COMPLETED;
 
 	kfree(vchnl_adi);
@@ -405,7 +409,7 @@ static int idpf_adi_destroy(struct idpf_adi *adi)
 	priv->reset_state = IDPF_ADI_RESET_INPROGRESS;
 
 	idpf_adi_dealloc_vectors(priv);
-	adapter->adi_info.priv_info[priv->adi_id] = NULL;
+	xa_erase(&adapter->adi_info.priv_info, priv->adi_id);
 
 	vchnl_adi.adi_id = cpu_to_le16(priv->adi_id);
 
@@ -918,22 +922,9 @@ int idpf_adi_core_init(struct idpf_adapter *adapter)
 {
 	u16 max_adi_cnt;
 
-	/*
-	 * If capability indicates 0 ADIs or the VDCM init itself had failed
-	 * or the data structure is already initialized, we need not allocate.
-	 * The data structure can be already populated here in case of hard
-	 * reset path for instance.
-	 */
 	max_adi_cnt = le16_to_cpu(adapter->caps.max_adis);
-	if (!adapter->adi_info.vdcm_init_ok || !max_adi_cnt ||
-	    adapter->adi_info.priv_info)
+	if (!adapter->adi_info.vdcm_init_ok || !max_adi_cnt)
 		return 0;
-
-	adapter->adi_info.priv_info = kcalloc(max_adi_cnt,
-					      sizeof(struct idpf_adi_priv *),
-					      GFP_KERNEL);
-	if (!adapter->adi_info.priv_info)
-		return -ENOMEM;
 
 	adapter->adi_info.max_adi_cnt = max_adi_cnt;
 	dev_info(idpf_adapter_to_dev(adapter), "Up to %d ADIs are permitted\n",

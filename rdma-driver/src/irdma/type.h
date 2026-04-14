@@ -518,17 +518,14 @@ struct irdma_sc_ceq {
 	struct irdma_sc_dev *dev;
 	struct irdma_ceqe *ceqe_base;
 	void *pbl_list;
-	u32 ceq_id;
 	u32 elem_cnt;
+	u16 ceq_id;
 	struct irdma_ring ceq_ring;
 	u8 pbl_chunk_size;
 	u8 tph_val;
 	u32 first_pm_pbl_idx;
 	u8 polarity;
 	struct irdma_sc_vsi *vsi;
-	struct irdma_sc_cq **reg_cq;
-	u32 reg_cq_size;
-	spinlock_t req_cq_lock; /* protect access to reg_cq array */
 	bool virtual_map:1;
 	bool tph_en:1;
 	bool itr_no_expire:1;
@@ -544,8 +541,8 @@ struct irdma_sc_cq {
 	struct irdma_sc_vsi *vsi;
 	void *pbl_list;
 	void *back_cq;
-	u32 ceq_id;
 	u32 shadow_read_threshold;
+	u16 ceq_id;
 	u8 pbl_chunk_size;
 	u8 cq_type;
 	u8 tph_val;
@@ -652,13 +649,15 @@ struct irdma_hmc_fpm_misc {
 	u32 max_ceqs;
 	u32 max_sds;
 	u32 loc_mem_pages;
-	u8 ird;
+	u16 ird;
 	u32 xf_block_size;
 	u32 q1_block_size;
 	u32 ht_multiplier;
 	u32 timer_bucket;
 	u32 rrf_block_size;
 	u32 ooiscf_block_size;
+	struct irdma_dma_mem fw_scratch_buf0;
+	struct irdma_dma_mem fw_scratch_buf1;
 };
 
 struct irdma_vchnl_if {
@@ -804,12 +803,14 @@ struct irdma_sc_dev {
 	bool double_vlan_en:1;
 	bool multi_qs_enabled:1;
 	u8 protocol_used;
+	void **cq_table;
 	u64 hw_wa;	// Will have bit values for hw work arounds
 	u32 wa_mem_pages;
 	u8 rrf_multiplier;
 	u8 xf_multiplier;
 	u8 min_ird;
 	bool host_mem_mrte:1;
+	bool periodic_flush:1;
 	struct mutex vchnl_mutex;
 	int (*ws_add)(struct irdma_sc_vsi *vsi, u8 user_pri);
 	void (*ws_remove)(struct irdma_sc_vsi *vsi, u8 user_pri);
@@ -876,8 +877,8 @@ struct irdma_modify_srq_info {
 struct irdma_set_interrupt_info {
 	u32 hmc_fcn_id;
 	u32 ceq_agent_interrupt_index;
-	u32 ceq_id;
 	u32 aeq_agent_interrupt_index;
+	u16 ceq_id;
 	u8 use_hmc_fcn_id;
 	u8 set_ceq_int;
 	u8 set_aeq_int;
@@ -1018,7 +1019,7 @@ struct irdma_ceq_init_info {
 	u64 *ceqe_base;
 	void *pbl_list;
 	u32 elem_cnt;
-	u32 ceq_id;
+	u16 ceq_id;
 	bool virtual_map:1;
 	bool tph_en:1;
 	bool itr_no_expire:1;
@@ -1049,8 +1050,8 @@ struct irdma_ccq_init_info {
 	__le64 *shadow_area;
 	void *pbl_list;
 	u32 num_elem;
-	u32 ceq_id;
 	u32 shadow_read_threshold;
+	u16 ceq_id;
 	bool ceqe_mask:1;
 	bool ceq_id_valid:1;
 	bool avoid_mem_cflct:1;
@@ -1293,9 +1294,7 @@ struct irdma_reg_ns_stag_info {
 	bool use_hmc_fcn_index:1;
 	u16 hmc_fcn_index;
 	bool all_memory:1;
-	bool pasid_valid:1;
 	u8 remote_atomics_en;
-	u32 pasid;
 	bool non_cached:1;
 	u8 placement_type;
 };
@@ -1329,6 +1328,7 @@ struct irdma_dealloc_stag_info {
 	u32 pd_id;
 	bool mr:1;
 	bool dealloc_pbl:1;
+	bool skip_flush_markers:1;
 };
 
 struct irdma_register_shared_stag {
@@ -1376,8 +1376,8 @@ struct irdma_cq_init_info {
 	struct irdma_sc_dev *dev;
 	u64 cq_base_pa;
 	u64 shadow_area_pa;
-	u32 ceq_id;
 	u32 shadow_read_threshold;
+	u16 ceq_id;
 	u8 pbl_chunk_size;
 	u32 first_pm_pbl_idx;
 	bool virtual_map:1;
@@ -1548,6 +1548,7 @@ void irdma_sc_qp_setctx_roce(struct irdma_sc_qp *qp, __le64 *qp_ctx,
 int irdma_sc_cq_destroy(struct irdma_sc_cq *cq, u64 scratch, bool post_sq);
 int irdma_sc_cq_init(struct irdma_sc_cq *cq, struct irdma_cq_init_info *info);
 void irdma_sc_cq_resize(struct irdma_sc_cq *cq, struct irdma_modify_cq_info *info);
+void irdma_sc_cq_ack(struct irdma_sc_cq *cq);
 int irdma_sc_aeq_destroy(struct irdma_sc_aeq *aeq, u64 scratch, bool post_sq);
 int irdma_sc_static_hmc_pages_allocated(struct irdma_sc_cqp *cqp, u64 scratch,
 					u16 hmc_fn_id, bool post_sq,

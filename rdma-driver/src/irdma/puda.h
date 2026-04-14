@@ -73,6 +73,7 @@ struct irdma_puda_buf {
 	bool vlan_valid:1;
 	bool do_lpb:1; /* Loopback buffer */
 	bool smac_valid:1;
+	bool queued:1;
 	u32 seqnum;
 	u32 ah_id;
 	u8 smac[ETH_ALEN];
@@ -149,7 +150,7 @@ struct irdma_puda_rsrc {
 struct irdma_puda_buf *irdma_puda_get_bufpool(struct irdma_puda_rsrc *rsrc);
 void irdma_puda_ret_bufpool(struct irdma_puda_rsrc *rsrc,
 			    struct irdma_puda_buf *buf);
-void irdma_puda_send_buf(struct irdma_puda_rsrc *rsrc,
+int irdma_puda_send_buf(struct irdma_puda_rsrc *rsrc,
 			 struct irdma_puda_buf *buf);
 int irdma_puda_send(struct irdma_sc_qp *qp, struct irdma_puda_send_info *info);
 int irdma_puda_create_rsrc(struct irdma_sc_vsi *vsi,

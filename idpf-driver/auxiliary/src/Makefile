@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-only
-# Copyright (C) 2019-2025 Intel Corporation
+# Copyright (C) 2019-2026 Intel Corporation
 
 
 ifneq ($(KERNELRELEASE),)
 # kbuild part of makefile
 #
-# Makefile for the Intel(R) Infrastructure Data Path Function Linux Driver
+# Makefile for Intel(R) Infrastructure Data Path Function Linux Driver
 #
 
 ifeq (${NEED_AUX_BUS},2)

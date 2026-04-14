@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2019-2025 Intel Corporation */
+/* Copyright (C) 2019-2026 Intel Corporation */
 
 #ifndef _IDPF_H_
 #define _IDPF_H_
@@ -26,6 +26,9 @@ struct idpf_rss_data;
 #include <linux/etherdevice.h>
 #include <linux/pci.h>
 #include <linux/sctp.h>
+#if IS_ENABLED(CONFIG_ETHTOOL_NETLINK)
+#include <linux/ethtool_netlink.h>
+#endif /* CONFIG_ETHTOOL_NETLINK */
 #include <linux/uio.h>
 #include <net/ip6_checksum.h>
 #ifdef HAVE_VXLAN_RX_OFFLOAD
@@ -52,7 +55,7 @@ struct idpf_rss_data;
 #endif /* CONFIG_IOMMU_BYPASS */
 
 #define IDPF_DRV_NAME "idpf"
-#define IDPF_DRV_VER "0.0.653"
+#define IDPF_DRV_VER "1.0.2"
 
 #define IDPF_M(m, s)	((m) << (s))
 
@@ -73,7 +76,6 @@ struct idpf_rss_data;
 #ifdef DEVLINK_ENABLED
 #include "idpf_devlink.h"
 #endif /* DEVLINK_ENABLED */
-#include "idpf_ptp.h"
 #include "idpf_adi.h"
 
 #define GETMAXVAL(num_bits)		GENMASK((num_bits) - 1, 0)
@@ -83,17 +85,13 @@ struct idpf_rss_data;
 /* Default Mailbox settings */
 #define IDPF_CTLQ_MAX_BUF_LEN		SZ_4K
 #define IDPF_NUM_FILTERS_PER_MSG	20
-#define IDPF_NUM_DFLT_MBX_Q             2       /* One TX and RX MBX queue */
+#define IDPF_NUM_DFLT_MBX_Q		2	/* includes both TX and RX */
 #define IDPF_DFLT_MBX_Q_LEN		64
 #define IDPF_DFLT_MBX_ID		-1
 /* maximum number of times to try before resetting mailbox */
 #define IDPF_MB_MAX_ERR			20
 #define IDPF_NUM_CHUNKS_PER_MSG(struct_sz, chunk_sz)   \
 	((IDPF_CTLQ_MAX_BUF_LEN - (struct_sz)) / (chunk_sz))
-
-#define IDPF_VC_XN_IDX_M		GENMASK(7, 0)
-#define IDPF_VC_XN_SALT_M		GENMASK(15, 8)
-#define IDPF_VC_XN_RING_LEN		U8_MAX
 
 #define IDPF_HARD_RESET_TIMEOUT_MSEC	(120 * 1000)
 #define IDPF_CORER_TIMEOUT_MSEC		(120 * 1000)
@@ -197,6 +195,16 @@ enum idpf_cap_field {
 };
 
 /**
+ * enum idpf_vport_state - Current vport state
+ * @IDPF_VPORT_UP: Vport is up
+ * @IDPF_VPORT_STATE_NBITS: Must be last, number of states
+ */
+enum idpf_vport_state {
+	IDPF_VPORT_UP,
+	IDPF_VPORT_STATE_NBITS
+ };
+
+/**
  * struct idpf_netdev_priv - Struct to store vport back pointer
  * @adapter: Adapter back pointer
  * @vport: Vport back pointer
@@ -206,7 +214,8 @@ enum idpf_cap_field {
 #ifdef HAVE_NDO_FEATURES_CHECK
  * @max_tx_hdr_size: Max header length hardware can support
 #endif
- * @active: vport is open or stopped
+ * @state: See enum idpf_vport_state
+ * @tx_max_bufs: Max buffers that can be transmitted with scatter-gather
  * @stats_lock: Lock to protect stats update
  * @netstats: Packet and byte stats
  */
@@ -219,7 +228,8 @@ struct idpf_netdev_priv {
 #ifdef HAVE_NDO_FEATURES_CHECK
 	u16 max_tx_hdr_size;
 #endif /* HAVE_NDO_FEATURES_CHECK */
-	bool active;
+	DECLARE_BITMAP(state, IDPF_VPORT_STATE_NBITS);
+	u16 tx_max_bufs;
 	spinlock_t stats_lock;
 	struct rtnl_link_stats64 netstats;
 };
@@ -265,6 +275,7 @@ struct idpf_vport_max_q {
 struct idpf_reg_ops {
 	void (*ctlq_reg_init)(struct idpf_hw *hw,
 			      struct idpf_ctlq_create_info *cq);
+
 	int (*intr_reg_init)(struct idpf_vport *vport,
 			     struct idpf_intr_grp *intr_grp);
 	void (*mb_intr_reg_init)(struct idpf_adapter *adapter);
@@ -272,7 +283,7 @@ struct idpf_reg_ops {
 	void (*trigger_reset)(struct idpf_adapter *adapter,
 			      enum idpf_flags trig_cause);
 	u64 (*read_master_time)(const struct idpf_hw *hw);
-	void (*ptp_reg_init)(struct idpf_adapter *adapter);
+	void (*ptp_reg_init)(const struct idpf_adapter *adapter);
 };
 
 /**
@@ -351,6 +362,23 @@ enum idpf_vport_flags {
 	IDPF_VPORT_FLAGS_NBITS,
 };
 
+#ifdef HAVE_ETHTOOL_GET_TS_STATS
+/**
+ * struct idpf_tstamp_stats - Tx timestamp statistics
+ * @stats_sync: See struct u64_stats_sync
+ * @packets: Number of packets successfully timestamped by the hardware
+ * @discarded: Number of Tx skbs discarded due to cached PHC
+ *	       being too old to correctly extend timestamp
+ * @flushed: Number of Tx skbs flushed due to interface closed
+ */
+struct idpf_tstamp_stats {
+	struct u64_stats_sync stats_sync;
+	u64_stats_t packets;
+	u64_stats_t discarded;
+	u64_stats_t flushed;
+};
+#endif /* HAVE_ETHTOOL_GET_TS_STATS */
+
 #ifdef IDPF_ADD_PROBES
 struct idpf_extra_stats {
 	u64_stats_t tx_tcp_segs;
@@ -387,110 +415,33 @@ struct idpf_port_stats {
 #ifdef IDPF_ADD_PROBES
 	struct idpf_extra_stats extra_stats;
 #endif /* IDPF_ADD_PROBES */
-};
-
-/**
- * enum idpf_vc_xn_state - Virtchnl transaction status
- * @IDPF_VC_XN_IDLE: not expecting a reply, ready to be used
- * @IDPF_VC_XN_WAITING: expecting a reply, not yet received
- * @IDPF_VC_XN_COMPLETED_SUCCESS: a reply was expected and received,
- *				  buffer updated
- * @IDPF_VC_XN_COMPLETED_FAILED: a reply was expected and received, but there
- *				 was an error, buffer not updated
- * @IDPF_VC_XN_SHUTDOWN: transaction object cannot be used, VC torn down
- * @IDPF_VC_XN_ASYNC: transaction sent asynchronously and doesn't have return
- *		      context, a callback may have been provide
- */
-enum idpf_vc_xn_state {
-	IDPF_VC_XN_IDLE = 1,
-	IDPF_VC_XN_WAITING,
-	IDPF_VC_XN_COMPLETED_SUCCESS,
-	IDPF_VC_XN_COMPLETED_FAILED,
-	IDPF_VC_XN_SHUTDOWN,
-	IDPF_VC_XN_ASYNC,
-};
-
-struct idpf_vc_xn;
-/* Callback for asynchronous messages */
-typedef int (*async_vc_cb) (struct idpf_adapter *, struct idpf_vc_xn *,
-			    const struct idpf_ctlq_msg *);
-
-/**
- * struct idpf_vc_xn - Data structure representing virtchnl transactions
- * @completed: virtchnl event loop uses that to signal when a reply is
- *	       available, uses kernel completion API
- * @state: virtchnl event loop stores the data below, protected by the
- *	   completion's lock.
- * @reply_sz: Original size of reply, may be > reply_buf.iov_len; it will be
- *	      truncated on its way to the receiver thread according to
- *	      reply_buf.iov_len.
- * @reply: Reference to the buffer(s) where the reply data should be written
- *	   to. May be 0-length (then NULL address permitted) if the reply data
- *	   should be ignored.
- * @async_handler: if sent asynchronously, a callback can be provided to handle
- *		   the reply when it's received
- * @vc_op: corresponding opcode sent with this transaction
- * @idx: index used as retrieval on reply receive, used for cookie
- * @salt: changed every message to make unique, used for cookie
- */
-struct idpf_vc_xn {
-	struct completion completed;
-	enum idpf_vc_xn_state state;
-	size_t reply_sz;
-	struct kvec reply;
-	async_vc_cb async_handler;
-	u32 vc_op;
-	u8 idx;
-	u8 salt;
-};
-
-/**
- * struct idpf_vc_xn_params - Parameters for executing transaction
- * @send_buf: kvec for send buffer
- * @recv_buf: kvec for recv buffer, may be NULL, must then have zero length
- * @timeout_ms: timeout to wait for reply
- * @async: send message asynchronously, will not wait on completion
- * @async_handler: if sent asynchronously, optional callback handler
- * @vc_op: virtchnl op to send
- */
-struct idpf_vc_xn_params {
-	struct kvec send_buf;
-	struct kvec recv_buf;
-	int timeout_ms;
-	bool async;
-	async_vc_cb async_handler;
-	u32 vc_op;
-};
-
-/**
- * struct idpf_vc_xn_manager - Manager for tracking transactions
- * @ring: backing and lookup for transactions
- * @free_xn_bm: bitmap for free transactions
- * @xn_bm_lock: make bitmap access synchronous where necessary
- * @salt: used to make cookie unique every message
- */
-struct idpf_vc_xn_manager {
-	struct idpf_vc_xn ring[IDPF_VC_XN_RING_LEN];
-	DECLARE_BITMAP(free_xn_bm, IDPF_VC_XN_RING_LEN);
-	/* make bitmap access synchronous where necessary */
-	spinlock_t xn_bm_lock;
-	u8 salt;
-	/* has this been initialized */
-	bool active;
+	u64_stats_t tx_lso_pkts;
+	u64_stats_t tx_lso_bytes;
+	u64_stats_t tx_lso_segs_tot;
+	u64_stats_t rx_page_recycles;
+	u64_stats_t rx_page_reallocs;
+	u64_stats_t rx_rsc_pkts;
+	u64_stats_t rx_rsc_bytes;
+	u64_stats_t rx_rsc_segs_tot;
+	u64_stats_t lso_seg[IDPF_MAX_SEGS];
+	u64_stats_t rsc_seg[IDPF_MAX_SEGS];
 };
 
 /**
  * struct idpf_q_grp - Queue resource group
  * @num_txq: Number of allocated TX queues
  * @num_complq: Number of allocated completion queues
+ * @num_txq_grp: Number of TX queue groups
+ * @txq_grps: Array of TX queue groups
  * @txq_desc_count: TX queue descriptor count
  * @complq_desc_count: Completion queue descriptor count
  * @txq_model: Split queue or single queue queuing model
- * @txqs: Array of TX queues
- * @complqs: Array of completion queues
- * @bufq_per_rxq: Number of buffer queues per RX queue
+ * @num_bufqs_per_qgrp: Buffer queues per RX queue in a given grouping
  * @num_bufq: Number of allocated buffer queues
  * @num_rxq: Number of allocated RX queues
+ * @num_rxq_grp: Number of allocated RX queue groups
+ * @rxq_grps: Total number of RX groups. Number of groups * number of RX per
+ *	      group will yield total number of RX queues.
  * @rxq_desc_count: RX queue descriptor count. *MUST* have enough descriptors
  *                  to complete all buffer descriptors for all buffer queues in
  *                  the worst case.
@@ -505,22 +456,23 @@ struct idpf_vc_xn_manager {
 struct idpf_q_grp {
 	u16 num_txq;
 	u16 num_complq;
+	u16 num_txq_grp;
+	struct idpf_txq_group *txq_grps;
 	u32 txq_desc_count;
 	u32 complq_desc_count;
 	u16 txq_model;
-	struct idpf_queue **txqs;
-	struct idpf_queue *complqs;
-	u16 bufq_per_rxq;
+	u8 num_bufqs_per_qgrp;
 	u16 num_bufq;
+
 	u16 num_rxq;
+	u16 num_rxq_grp;
+	struct idpf_rxq_group *rxq_grps;
 	u32 rxq_desc_count;
-	u32 bufq_desc_count[IDPF_MAX_BUFQS_PER_RXQ];
-	u32 bufq_size[IDPF_MAX_BUFQS_PER_RXQ];
+	u32 bufq_desc_count[IDPF_MAX_BUFQS_PER_RXQ_GRP];
+	u32 bufq_size[IDPF_MAX_BUFQS_PER_RXQ_GRP];
 	u16 rxq_model;
 	bool base_rxd;
-	struct idpf_queue **rxqs;
-	struct idpf_queue *bufqs;
-	struct idpf_sw_queue *refillqs;
+
 };
 
 /**
@@ -583,12 +535,15 @@ struct idpf_vgrp {
  * @default_mac_addr: device will give a default MAC to use
  * @rx_itr_profile: RX profiles for Dynamic Interrupt Moderation
  * @tx_itr_profile: TX profiles for Dynamic Interrupt Moderation
- * @port_stats: Per port csum, header split, and other offload stats
+ * @port_stats: per port csum, header split, and other offload stats
  * @link_up: True if link is up
  * @sw_marker_wq: Workqueue for marker packets
- * @tstamp_config: The Tx tstamp config
- * @tx_tstamp_caps: The capabilities negotiated for Tx timestamping
- * @tstamp_task: Tx timestamping task
+ * @tx_tstamp_caps: Capabilities negotiated for TX timestamping
+ * @tstamp_config: The TX tstamp config
+ * @tstamp_task: TX timestamping task
+#ifdef HAVE_ETHTOOL_GET_TS_STATS
+ * @tstamp_stats: TX timestamping statistics
+#endif
  * @finish_reset_task: finish vport's soft reset task
  */
 struct idpf_vport {
@@ -602,16 +557,15 @@ struct idpf_vport {
 #ifdef HAVE_XDP_SUPPORT
 	int num_xdp_txq;
 	int num_xdp_rxq;
-	int num_xdp_complq;
 	int xdp_txq_offset;
 	int xdp_rxq_offset;
-	int xdp_complq_offset;
 #ifdef HAVE_NETDEV_BPF_XSK_POOL
 	struct xsk_buff_pool *req_xsk_pool;
 	bool xsk_enable_req;
 #endif
 	void (*xdp_prepare_tx_desc)(struct idpf_queue *xdpq, dma_addr_t dma,
-				    u16 idx, u32 size);
+				    u16 idx, u32 size,
+				    struct idpf_tx_splitq_params *params);
 #endif /* HAVE_XDP_SUPPORT */
 	struct idpf_rx_ptype_decoded rx_ptype_lkup[IDPF_RX_MAX_PTYPE];
 #ifdef IDPF_ADD_PROBES
@@ -632,21 +586,27 @@ struct idpf_vport {
 	bool link_up;
 	/* Everything below this will NOT be copied during soft reset */
 	wait_queue_head_t sw_marker_wq;
-	struct hwtstamp_config tstamp_config;
+
 	struct idpf_ptp_vport_tx_tstamp_caps *tx_tstamp_caps;
+	struct hwtstamp_config tstamp_config;
 	struct work_struct tstamp_task;
+#ifdef HAVE_ETHTOOL_GET_TS_STATS
+	struct idpf_tstamp_stats tstamp_stats;
+#endif /* HAVE_ETHTOOL_GET_TS_STATS */
 	struct work_struct finish_reset_task;
 };
 
 /**
  * enum idpf_user_flags
  * @__IDPF_PRIV_FLAGS_HDR_SPLIT: Private flag to toggle header split
+ * @__IDPF_USER_FLAG_HSPLIT: header split state
  * @__IDPF_PROMISC_UC: Unicast promiscuous mode
  * @__IDPF_PROMISC_MC: Multicast promiscuous mode
  * @__IDPF_USER_FLAGS_NBITS: Must be last
  */
 enum idpf_user_flags {
 	__IDPF_PRIV_FLAGS_HDR_SPLIT = 0,
+	__IDPF_USER_FLAG_HSPLIT = 0U,
 	__IDPF_PROMISC_UC = 32,
 	__IDPF_PROMISC_MC,
 	__IDPF_USER_FLAGS_NBITS,
@@ -671,9 +631,27 @@ struct idpf_rss_data {
 };
 
 /**
+ * struct idpf_q_coalesce - User defined coalescing configuration values for
+ *                        a single queue.
+ * @tx_intr_mode: Dynamic TX ITR or not
+ * @rx_intr_mode: Dynamic RX ITR or not
+ * @tx_coalesce_usecs: TX interrupt throttling rate
+ * @rx_coalesce_usecs: RX interrupt throttling rate
+ *
+ * Used to restore user coalescing configuration after a reset.
+ */
+struct idpf_q_coalesce {
+	u32 tx_intr_mode;
+	u32 rx_intr_mode;
+	u32 tx_coalesce_usecs;
+	u32 rx_coalesce_usecs;
+};
+
+/**
  * struct idpf_vport_user_config_data - User defined configuration values for
  *                                      each vport.
  * @rss_data: See struct idpf_rss_data
+ * @q_coalesce: Array of per queue coalescing data
  * @num_req_tx_qs: Number of user requested TX queues through ethtool
  * @num_req_rx_qs: Number of user requested RX queues through ethtool
  * @num_req_txq_desc: Number of user requested TX queue descriptors through
@@ -687,6 +665,7 @@ struct idpf_rss_data {
  */
 struct idpf_vport_user_config_data {
 	struct idpf_rss_data rss_data;
+	struct idpf_q_coalesce *q_coalesce;
 	u16 num_req_tx_qs;
 	u16 num_req_rx_qs;
 	u32 num_req_txq_desc;
@@ -776,6 +755,13 @@ struct idpf_vector_lifo {
 	u16 *vec_idx;
 };
 
+#ifndef HAVE_NETDEV_IRQ_AFFINITY_AND_ARFS
+struct idpf_vec_affinity_config {
+	cpumask_t affinity_mask;
+	struct irq_affinity_notify affinity_notify;
+};
+#endif /* !HAVE_NETDEV_IRQ_AFFINITY_AND_ARFS */
+
 /**
  * struct idpf_vport_config - Vport configuration data
  * @user_config: see struct idpf_vport_user_config_data
@@ -787,6 +773,10 @@ struct idpf_vector_lifo {
 struct idpf_vport_config {
 	struct idpf_vport_user_config_data user_config;
 	struct idpf_vport_max_q max_q;
+#ifndef HAVE_NETDEV_IRQ_AFFINITY_AND_ARFS
+#define MAX_NUM_VEC_AFFINTY	64
+	struct idpf_vec_affinity_config *affinity_config;
+#endif /* !HAVE_NETDEV_IRQ_AFFINITY_AND_ARFS */
 	struct virtchnl2_add_queues *req_qs_chunks;
 	spinlock_t mac_filter_list_lock;
 	DECLARE_BITMAP(flags, IDPF_VPORT_CONFIG_FLAGS_NBITS);
@@ -838,7 +828,6 @@ struct idpf_iommu_bypass {
  * @netdevs: Associated Vport netdevs
  * @vport_params_recvd: Vport params received
  * @vport_ids: Array of device given vport identifiers
- * @vcxn_mngr: Virtchnl transaction manager
  * @vport_config: Vport config parameters
  * @max_vports: Maximum vports that can be allocated
  * @num_alloc_vports: Current number of vports allocated
@@ -854,6 +843,8 @@ struct idpf_iommu_bypass {
  * @stats_task: Periodic statistics retrieval task
  * @stats_wq: Workqueue for statistics task
  * @caps: Negotiated capabilities with device
+ * @vlan_caps: Negotiated VLAN capabilities
+ * @vcxn_mngr: Virtchnl transaction manager
  * @edt_caps: EDT capabilities
  * @dev_ops: See idpf_dev_ops
  * @rdma_data: RDMA data
@@ -873,7 +864,7 @@ struct idpf_iommu_bypass {
  * @sf_id: Unique integer corresponding to a subfunc
  * @sf_cnt: Count of active subfunctions
 #endif
- * @ptp: PTP structure
+ * @ptp: Storage for PTP-related data
  * @tx_compl_tstamp_gran_s: Number of left bit shifts to convert Tx completion
  *			    descriptor timestamp in nanoseconds.
  * @corer_done: Used to track the completion of CORER
@@ -908,13 +899,14 @@ struct idpf_adapter {
 	struct idpf_q_vector mb_vector;
 	struct idpf_vector_lifo vector_stack;
 	irqreturn_t (*irq_mb_handler)(int irq, void *data);
+
 	u32 tx_timeout_count;
 	struct idpf_avail_queue_info avail_queues;
 	struct idpf_vport **vports;
 	struct net_device **netdevs;
 	struct virtchnl2_create_vport **vport_params_recvd;
 	u32 *vport_ids;
-	struct idpf_vc_xn_manager vcxn_mngr;
+
 	struct idpf_vport_config **vport_config;
 	u16 max_vports;
 	u16 num_alloc_vports;
@@ -930,6 +922,9 @@ struct idpf_adapter {
 	struct delayed_work stats_task;
 	struct workqueue_struct *stats_wq;
 	struct virtchnl2_get_capabilities caps;
+	struct virtchnl2_vlan_get_caps vlan_caps;
+	struct idpf_vc_xn_manager *vcxn_mngr;
+
 	struct virtchnl2_edt_caps edt_caps;
 	struct idpf_dev_ops dev_ops;
 	struct idpf_rdma_data rdma_data;
@@ -948,7 +943,8 @@ struct idpf_adapter {
 	unsigned short sf_id;
 	unsigned short sf_cnt;
 #endif /* DEVLINK_ENABLED */
-	struct idpf_ptp ptp;
+
+	struct idpf_ptp *ptp;
 	u32 tx_compl_tstamp_gran_s;
 	struct completion corer_done;
 };
@@ -985,7 +981,7 @@ static inline bool idpf_xdp_is_prog_ena(struct idpf_vport *vport)
  */
 static inline struct idpf_queue *idpf_get_related_xdp_queue(struct idpf_queue *rxq)
 {
-	return rxq->vport->dflt_grp.q_grp.txqs[rxq->idx + rxq->vport->xdp_txq_offset];
+	return rxq->vport->txqs[rxq->idx + rxq->vport->xdp_txq_offset];
 }
 
 /**
@@ -1039,16 +1035,16 @@ static inline u16 idpf_get_reserved_rdma_vecs(struct idpf_adapter *adapter)
 }
 
 #define IDPF_CAP_RSS (\
-	VIRTCHNL2_CAP_RSS_IPV4_TCP	|\
-	VIRTCHNL2_CAP_RSS_IPV4_TCP	|\
-	VIRTCHNL2_CAP_RSS_IPV4_UDP	|\
-	VIRTCHNL2_CAP_RSS_IPV4_SCTP	|\
-	VIRTCHNL2_CAP_RSS_IPV4_OTHER	|\
-	VIRTCHNL2_CAP_RSS_IPV6_TCP	|\
-	VIRTCHNL2_CAP_RSS_IPV6_TCP	|\
-	VIRTCHNL2_CAP_RSS_IPV6_UDP	|\
-	VIRTCHNL2_CAP_RSS_IPV6_SCTP	|\
-	VIRTCHNL2_CAP_RSS_IPV6_OTHER)
+	VIRTCHNL2_FLOW_IPV4_TCP		|\
+	VIRTCHNL2_FLOW_IPV4_TCP		|\
+	VIRTCHNL2_FLOW_IPV4_UDP		|\
+	VIRTCHNL2_FLOW_IPV4_SCTP	|\
+	VIRTCHNL2_FLOW_IPV4_OTHER	|\
+	VIRTCHNL2_FLOW_IPV6_TCP		|\
+	VIRTCHNL2_FLOW_IPV6_TCP		|\
+	VIRTCHNL2_FLOW_IPV6_UDP		|\
+	VIRTCHNL2_FLOW_IPV6_SCTP	|\
+	VIRTCHNL2_FLOW_IPV6_OTHER)
 
 #define IDPF_CAP_RSC (\
 	VIRTCHNL2_CAP_RSC_IPV4_TCP	|\
@@ -1058,13 +1054,13 @@ static inline u16 idpf_get_reserved_rdma_vecs(struct idpf_adapter *adapter)
 	VIRTCHNL2_CAP_RX_HSPLIT_AT_L4V4	|\
 	VIRTCHNL2_CAP_RX_HSPLIT_AT_L4V6)
 
-#define IDPF_CAP_RX_CSUM_L4V4 (\
-	VIRTCHNL2_CAP_RX_CSUM_L4_IPV4_TCP	|\
-	VIRTCHNL2_CAP_RX_CSUM_L4_IPV4_UDP)
+#define IDPF_CAP_TX_CSUM_L4V4 (\
+	VIRTCHNL2_CAP_TX_CSUM_L4_IPV4_TCP	|\
+	VIRTCHNL2_CAP_TX_CSUM_L4_IPV4_UDP)
 
-#define IDPF_CAP_RX_CSUM_L4V6 (\
-	VIRTCHNL2_CAP_RX_CSUM_L4_IPV6_TCP	|\
-	VIRTCHNL2_CAP_RX_CSUM_L4_IPV6_UDP)
+#define IDPF_CAP_TX_CSUM_L4V6 (\
+	VIRTCHNL2_CAP_TX_CSUM_L4_IPV6_TCP	|\
+	VIRTCHNL2_CAP_TX_CSUM_L4_IPV6_UDP)
 
 #define IDPF_CAP_RX_CSUM (\
 	VIRTCHNL2_CAP_RX_CSUM_L3_IPV4		|\
@@ -1073,15 +1069,17 @@ static inline u16 idpf_get_reserved_rdma_vecs(struct idpf_adapter *adapter)
 	VIRTCHNL2_CAP_RX_CSUM_L4_IPV6_TCP	|\
 	VIRTCHNL2_CAP_RX_CSUM_L4_IPV6_UDP)
 
-#define IDPF_CAP_SCTP_CSUM (\
+#define IDPF_CAP_TX_SCTP_CSUM (\
 	VIRTCHNL2_CAP_TX_CSUM_L4_IPV4_SCTP	|\
-	VIRTCHNL2_CAP_TX_CSUM_L4_IPV6_SCTP	|\
-	VIRTCHNL2_CAP_RX_CSUM_L4_IPV4_SCTP	|\
-	VIRTCHNL2_CAP_RX_CSUM_L4_IPV6_SCTP)
+	VIRTCHNL2_CAP_TX_CSUM_L4_IPV6_SCTP)
 
 #define IDPF_CAP_TUNNEL_TX_CSUM (\
 	VIRTCHNL2_CAP_TX_CSUM_L3_SINGLE_TUNNEL	|\
 	VIRTCHNL2_CAP_TX_CSUM_L4_SINGLE_TUNNEL)
+
+#define IDPF_VLAN_OFFLOAD_FEATURES (\
+	NETIF_F_HW_VLAN_CTAG_RX | \
+	NETIF_F_HW_VLAN_CTAG_TX)
 
 /**
  * idpf_get_reserved_vecs - Get reserved vectors
@@ -1218,36 +1216,6 @@ static inline u16 idpf_get_max_tx_hdr_size(struct idpf_adapter *adapter)
 
 #endif /* HAVE_NDO_FEATURES_CHECK */
 /**
- * idpf_rx_bufq_offset - Translate an RX idx and bufq idx for true offset
- * @q_grp: Queue resources
- * @rx_idx: RX queue index
- * @bufq_idx: Buffer queue index
- */
-static inline int idpf_rx_bufq_offset(struct idpf_q_grp *q_grp, int rx_idx,
-				      int bufq_idx)
-{
-	return q_grp->bufq_per_rxq * rx_idx + bufq_idx;
-}
-
-/**
- * idpf_txq_from_rel_qid - Translate a relative TX qid to txq
- * @q_grp: Queue resources
- * @complq: Completion queue to base
- * @rel_qid: Relative qid
- */
-static inline struct idpf_queue *
-idpf_txq_from_rel_qid(struct idpf_q_grp *q_grp, struct idpf_queue *complq,
-		      u32 rel_qid)
-{
-	int offset = complq->idx * IDPF_TXQ_PER_COMPLQ + rel_qid;
-
-	if (unlikely(offset >= q_grp->num_txq))
-		return NULL;
-
-	return q_grp->txqs[offset];
-}
-
-/**
  * idpf_vport_init_lock -Acquire the init/deinit control lock. It
  * controls and protect initialization, re-initialization and
  * deinitialization code flow and its resources.
@@ -1294,45 +1262,18 @@ void idpf_statistics_task(struct work_struct *work);
 void idpf_init_task(struct work_struct *work);
 void idpf_service_task(struct work_struct *work);
 void idpf_mbx_task(struct work_struct *work);
-void idpf_ptp_tstamp_task(struct work_struct *work);
 void idpf_finish_soft_reset(struct work_struct *work);
 void idpf_vc_event_task(struct work_struct *work);
 void idpf_dev_ops_init(struct idpf_adapter *adapter);
 void idpf_vf_dev_ops_init(struct idpf_adapter *adapter);
-void idpf_init_vc_xn_completion(struct idpf_vc_xn_manager *vcxn_mngr);
-void idpf_vc_xn_init(struct idpf_vc_xn_manager *vcxn_mngr);
-void idpf_vc_xn_shutdown(struct idpf_vc_xn_manager *vcxn_mngr);
 void idpf_vport_adjust_qs(struct idpf_vport *vport);
-int idpf_init_dflt_mbx(struct idpf_adapter *adapter);
-void idpf_deinit_dflt_mbx(struct idpf_adapter *adapter);
-int idpf_vc_core_init(struct idpf_adapter *adapter);
-void idpf_vc_core_deinit(struct idpf_adapter *adapter);
 int idpf_intr_req(struct idpf_adapter *adapter);
 void idpf_intr_rel(struct idpf_adapter *adapter);
-int idpf_get_reg_intr_vecs(struct idpf_vport *vport,
-			   struct idpf_vec_regs *reg_vals);
 #ifdef HAVE_NDO_FEATURES_CHECK
 u16 idpf_get_max_tx_hdr_size(struct idpf_adapter *adapter);
 #endif /* HAVE_NDO_FEATURES_CHECK */
-int idpf_send_delete_queues_msg(struct idpf_vport *vport);
-int idpf_send_add_queues_msg(struct idpf_vport *vport, u16 num_tx_q,
-			     u16 num_complq, u16 num_rx_q, u16 num_rx_bufq);
 int idpf_initiate_soft_reset(struct idpf_vport *vport,
 			     enum idpf_vport_reset_cause reset_cause);
-int idpf_send_enable_vport_msg(struct idpf_vport *vport);
-int idpf_send_disable_vport_msg(struct idpf_vport *vport);
-int idpf_send_destroy_vport_msg(struct idpf_vport *vport);
-int idpf_send_get_rx_ptype_msg(struct idpf_vport *vport);
-int idpf_send_ena_dis_loopback_msg(struct idpf_vport *vport);
-int idpf_send_get_set_rss_key_msg(struct idpf_vport *vport,
-				  struct idpf_rss_data *rss_data,
-				  bool get);
-int idpf_send_get_set_rss_lut_msg(struct idpf_vport *vport,
-				  struct idpf_rss_data *rss_data,
-				  bool get);
-int idpf_send_get_set_rss_hash_msg(struct idpf_vport *vport, bool get);
-int idpf_send_dealloc_vectors_msg(struct idpf_adapter *adapter);
-int idpf_send_alloc_vectors_msg(struct idpf_adapter *adapter, u16 num_vectors);
 void idpf_deinit_task(struct idpf_adapter *adapter);
 void idpf_deinit_vector_stack(struct idpf_adapter *adapter);
 int idpf_req_rel_vector_indexes(struct idpf_adapter *adapter,
@@ -1342,17 +1283,13 @@ int idpf_vport_alloc_vec_indexes(struct idpf_vport *vport,
 				 struct idpf_vgrp *vgrp);
 void idpf_vport_dealloc_vec_indexes(struct idpf_vport *vport,
 				    struct idpf_vgrp *vgrp);
-int idpf_send_get_stats_msg(struct idpf_vport *vport);
-int idpf_get_vec_ids(struct idpf_adapter *adapter,
-		     u16 *vecids, int num_vecids,
-		     struct virtchnl2_vector_chunks *chunks);
-int idpf_recv_mb_msg(struct idpf_adapter *adapter);
-int idpf_send_mb_msg(struct idpf_adapter *adapter, u32 op,
-		     u16 msg_size, u8 *msg, u16 cookie);
-ssize_t idpf_vc_xn_exec(struct idpf_adapter *adapter,
-			const struct idpf_vc_xn_params *params);
 void idpf_set_ethtool_ops(struct net_device *netdev);
+#if IS_ENABLED(CONFIG_ETHTOOL_NETLINK) && defined(HAVE_ETHTOOL_SUPPORT_TCP_DATA_SPLIT)
+u8 idpf_vport_get_hsplit(const struct idpf_vport *vport);
+bool idpf_vport_set_hsplit(const struct idpf_vport *vport, u8 val);
+#else
 void idpf_vport_set_hsplit(struct idpf_vport *vport, bool ena);
+#endif /* CONFIG_ETHTOOL_NETLINK && HAVE_ETHTOOL_SUPPORT_TCP_DATA_SPLIT */
 #ifdef DEVLINK_ENABLED
 void idpf_vport_dealloc(struct idpf_vport *vport);
 #endif /* DEVLINK_ENABLED */
@@ -1366,38 +1303,22 @@ int idpf_add_del_mac_filters(struct idpf_vport *vport,
 int idpf_set_promiscuous(struct idpf_adapter *adapter,
 			 struct idpf_vport_user_config_data *config_data,
 			 u32 vport_id);
-int idpf_send_disable_queues_msg(struct idpf_vport *vport,
-				 struct idpf_vgrp *vgrp,
-				 struct virtchnl2_queue_reg_chunks *chunks);
 struct virtchnl2_queue_reg_chunks *
 idpf_get_queue_reg_chunks(struct idpf_vport *vport);
 int idpf_vport_init(struct idpf_vport *vport, struct idpf_vport_max_q *max_q);
 void idpf_netdev_stop_all(struct idpf_adapter *adapter);
 void idpf_device_detach(struct idpf_adapter *adapter);
 int idpf_check_reset_complete(struct idpf_adapter *adapter);
-int idpf_init_hard_reset(struct idpf_adapter *adapter);
 int idpf_reset_recover(struct idpf_adapter *adapter);
 bool idpf_is_reset_detected(struct idpf_adapter *adapter);
 int idpf_vport_queue_ids_init(struct idpf_q_grp *q_grp,
 			      struct virtchnl2_queue_reg_chunks *chunks);
 int idpf_queue_reg_init(struct idpf_vport *vport, struct idpf_q_grp *q_grp,
 			struct virtchnl2_queue_reg_chunks *chunks);
-int idpf_send_config_queues_msg(struct idpf_vport *vport,
-				struct idpf_q_grp *q_grp);
-int idpf_send_enable_queues_msg(struct idpf_vport *vport,
-				struct virtchnl2_queue_reg_chunks *chunks);
 void idpf_set_vport_state(struct idpf_adapter *adapter);
-int idpf_send_create_vport_msg(struct idpf_adapter *adapter,
-			       struct idpf_vport_max_q *max_q);
 int idpf_check_supported_desc_ids(struct idpf_vport *vport);
-int idpf_send_create_adi_msg(struct idpf_adapter *adapter,
-			     struct virtchnl2_non_flex_create_adi *vchnl_adi);
-int idpf_send_destroy_adi_msg(struct idpf_adapter *adapter,
-			      struct virtchnl2_non_flex_destroy_adi *vchnl_adi);
 void idpf_vport_intr_write_itr(struct idpf_q_vector *q_vector,
 			       u16 itr, bool tx);
-int idpf_send_map_unmap_queue_vector_msg(struct idpf_vport *vport,
-					 struct idpf_vgrp *vgrp, bool map);
 #ifdef HAVE_XDP_SUPPORT
 #ifdef HAVE_XDP_FRAME_STRUCT
 int idpf_xdp_xmit(struct net_device *dev, int n, struct xdp_frame **frames,
@@ -1409,7 +1330,6 @@ int idpf_xdp_xmit(struct net_device *dev, struct xdp_buff *xdp);
 void idpf_xdp_flush(struct net_device *dev);
 #endif /* NO_NDO_XDP_FLUSH */
 #endif /* HAVE_XDP_SUPPORT */
-int idpf_send_set_sriov_vfs_msg(struct idpf_adapter *adapter, u16 num_vfs);
 int idpf_sriov_configure(struct pci_dev *pdev, int num_vfs);
 int idpf_sriov_config_vfs(struct pci_dev *pdev, int num_vfs);
 int idpf_idc_init(struct idpf_adapter *adapter);
@@ -1422,25 +1342,17 @@ int idpf_idc_vc_receive(struct idpf_rdma_data *rdma_data, u32 f_id, const u8 *ms
 			u16 msg_size);
 void idpf_idc_event(struct idpf_rdma_data *rdma_data,
 		    enum iidc_event_type event_type);
+/**
+ * idpf_is_feature_ena - Determine if a particular feature is enabled
+ * @vport: Vport to check
+ * @feature: Netdev flag to check
+ *
+ * Returns true or false if a particular feature is enabled.
+ */
 static inline bool idpf_is_feature_ena(struct idpf_vport *vport,
 				       netdev_features_t feature)
 {
 	return vport->netdev->features & feature;
 }
-
-/**
- * idpf_ptp_info_to_adapter - get driver adapter struct from ptp_clock_info
- * @info: pointer to ptp_clock_info struct
- */
-static inline
-struct idpf_adapter *idpf_ptp_info_to_adapter(struct ptp_clock_info *info)
-{
-	struct idpf_ptp *ptp = container_of(info, struct idpf_ptp, info);
-
-	return container_of(ptp, struct idpf_adapter, ptp);
-}
-
-#define IDPF_VC_XN_DEFAULT_TIMEOUT_MSEC	(120 * 1000)
-#define IDPF_VC_XN_MIN_TIMEOUT_MSEC	2000
 
 #endif /* !_IDPF_H_ */
