@@ -1,7 +1,7 @@
-From 03d2eeb4a68da5157b9d221071f8449999816472 Mon Sep 17 00:00:00 2001
+From aac1c5cc43e7f3e72072f05d6e68a48f4385f9a5 Mon Sep 17 00:00:00 2001
 From: Jacob Moroni <jmoroni@google.com>
-Date: Tue, 19 Aug 2025 21:53:37 +0000
-Subject: [PATCH 1/1] irdma: Add UD queue depth clamping support
+Date: Tue, 14 Apr 2026 15:24:52 +0000
+Subject: [PATCH] irdma: Add UD queue depth clamping support
 
 Added the ability to clamp the queue depth for UD QPs.
 
@@ -41,7 +41,7 @@ Signed-off-by: Jacob Moroni <jmoroni@google.com>
  5 files changed, 266 insertions(+), 11 deletions(-)
 
 diff --git a/providers/irdma/uk.c b/providers/irdma/uk.c
-index f5d41179b..8bcbb80a6 100644
+index e8216addb..05d57a59a 100644
 --- a/providers/irdma/uk.c
 +++ b/providers/irdma/uk.c
 @@ -275,6 +275,12 @@ __le64 *irdma_qp_get_next_send_wqe(struct irdma_qp_uk *qp, __u32 *wqe_idx,
@@ -57,7 +57,7 @@ index f5d41179b..8bcbb80a6 100644
  	if (qp->uk_attrs->feature_flags & IRDMA_FEATURE_ENFORCE_SQ_SIZE) {
  		atomic_fetch_add(&qp->sq_ring.post_cnt, 1);
  		if (info->signaled) {
-@@ -1563,6 +1569,8 @@ int irdma_uk_cq_poll_cmpl(struct irdma_cq_uk *cq,
+@@ -1568,6 +1574,8 @@ int irdma_uk_cq_poll_cmpl(struct irdma_cq_uk *cq,
  		}
  		pring = &qp->rq_ring;
  	} else { /* q_type is IRDMA_CQE_QTYPE_SQ */
@@ -67,7 +67,7 @@ index f5d41179b..8bcbb80a6 100644
  			if (wqe_idx + 1 >= qp->conn_wqes)
  				qp->first_sq_wq = false;
 diff --git a/providers/irdma/umain.c b/providers/irdma/umain.c
-index c90954466..ddba245c4 100644
+index 6d6beeb2c..7d7a3ba1e 100644
 --- a/providers/irdma/umain.c
 +++ b/providers/irdma/umain.c
 @@ -24,6 +24,8 @@
@@ -79,7 +79,7 @@ index c90954466..ddba245c4 100644
  };
  
  unsigned int irdma_dbg;
-@@ -366,10 +368,42 @@ static struct verbs_device *irdma_device_alloc(struct verbs_sysfs_dev *sysfs_dev
+@@ -376,10 +378,42 @@ static struct verbs_device *irdma_device_alloc(struct verbs_sysfs_dev *sysfs_dev
  				"IRDMA_PASS_CIE_VENDOR_ERR\n", __func__, tmp);
  	}
  
@@ -123,10 +123,10 @@ index c90954466..ddba245c4 100644
  	 * dev_allocated_refcount tracks number of devices created
  	 */
 diff --git a/providers/irdma/umain.h b/providers/irdma/umain.h
-index d41765171..f8db50f96 100644
+index 5904b99f2..6f0dc89e2 100644
 --- a/providers/irdma/umain.h
 +++ b/providers/irdma/umain.h
-@@ -127,6 +127,20 @@ struct irdma_uqp {
+@@ -160,6 +160,20 @@ struct irdma_uqp {
  	struct irdma_qp_uk qp;
  	enum ibv_qp_type qp_type;
  	struct list_node dbg_entry;
@@ -148,7 +148,7 @@ index d41765171..f8db50f96 100644
  
  struct irdma_utd {
 diff --git a/providers/irdma/user.h b/providers/irdma/user.h
-index 7ef8ef7c2..1b8d1b210 100644
+index df18f5e57..6a7f52e1e 100644
 --- a/providers/irdma/user.h
 +++ b/providers/irdma/user.h
 @@ -12,6 +12,33 @@ struct irdma_env_params {
@@ -185,7 +185,7 @@ index 7ef8ef7c2..1b8d1b210 100644
  };
  
  extern struct irdma_env_params env;
-@@ -378,6 +405,7 @@ struct irdma_post_sq_info {
+@@ -380,6 +407,7 @@ struct irdma_post_sq_info {
  	__u8 op_type;
  	__u8 l4len;
  	bool signaled:1;
@@ -193,7 +193,7 @@ index 7ef8ef7c2..1b8d1b210 100644
  	bool read_fence:1;
  	bool local_fence:1;
  	bool inline_data:1;
-@@ -425,6 +453,7 @@ struct irdma_cq_poll_info {
+@@ -427,6 +455,7 @@ struct irdma_cq_poll_info {
  	bool ud_vlan_valid:1;
  	bool ud_smac_valid:1;
  	bool imm_valid:1;
@@ -201,7 +201,7 @@ index 7ef8ef7c2..1b8d1b210 100644
  	union {
  		__u32 tcp_sqn;
  		__u32 roce_psn;
-@@ -531,7 +560,7 @@ struct irdma_sq_uk_wr_trk_info {
+@@ -534,7 +563,7 @@ struct irdma_sq_uk_wr_trk_info {
  	__u32 wr_len;
  	__u16 quanta;
  	__u8 signaled;
@@ -211,10 +211,10 @@ index 7ef8ef7c2..1b8d1b210 100644
  
  struct irdma_qp_quanta {
 diff --git a/providers/irdma/uverbs.c b/providers/irdma/uverbs.c
-index dcebdd39c..61f9fc01d 100644
+index bf9ce825b..b9220cd66 100644
 --- a/providers/irdma/uverbs.c
 +++ b/providers/irdma/uverbs.c
-@@ -1105,6 +1105,33 @@ static void irdma_process_cqe(struct ibv_wc *entry, struct irdma_cq_poll_info *c
+@@ -1252,6 +1252,33 @@ static void irdma_process_cqe(struct ibv_wc *entry, struct irdma_cq_poll_info *c
  	entry->byte_len = cur_cqe->bytes_xfered;
  }
  
@@ -248,7 +248,7 @@ index dcebdd39c..61f9fc01d 100644
  /**
   * irdma_poll_one - poll one entry of the CQ
   * @ukcq: ukcq to poll
-@@ -1121,6 +1148,28 @@ static int irdma_poll_one(struct irdma_cq_uk *ukcq, struct irdma_cq_poll_info *c
+@@ -1268,6 +1295,28 @@ static int irdma_poll_one(struct irdma_cq_uk *ukcq, struct irdma_cq_poll_info *c
  	if (ret)
  		return ret;
  
@@ -277,7 +277,7 @@ index dcebdd39c..61f9fc01d 100644
  	if (!entry)
  		irdma_process_cqe_ext(cur_cqe);
  	else
-@@ -1823,6 +1872,27 @@ struct ibv_qp *irdma_ucreate_qp(struct ibv_pd *pd,
+@@ -1978,6 +2027,27 @@ struct ibv_qp *irdma_ucreate_qp(struct ibv_pd *pd,
  
  	iwuqp->qp.sq_ring.user_size = attr->cap.max_send_wr;
  
@@ -305,7 +305,7 @@ index dcebdd39c..61f9fc01d 100644
  	pthread_mutex_lock(&sigusr1_wait_mutex);
  	list_add(&dbg_uqp_list, &iwuqp->dbg_entry);
  	pthread_mutex_unlock(&sigusr1_wait_mutex);
-@@ -1960,12 +2030,23 @@ int irdma_udestroy_qp(struct ibv_qp *qp)
+@@ -2117,12 +2187,23 @@ int irdma_udestroy_qp(struct ibv_qp *qp)
  	int ret;
  
  	iwuqp = container_of(qp, struct irdma_uqp, ibv_qp);
@@ -332,19 +332,19 @@ index dcebdd39c..61f9fc01d 100644
  
  	ret = irdma_destroy_vmapped_qp(iwuqp);
  	if (ret)
-@@ -1984,8 +2065,11 @@ int irdma_udestroy_qp(struct ibv_qp *qp)
+@@ -2141,8 +2222,11 @@ int irdma_udestroy_qp(struct ibv_qp *qp)
  		free(iwuqp->qp.sq_wrtrk_array);
  	if (iwuqp->qp.rq_wrid_array)
  		free(iwuqp->qp.rq_wrid_array);
 +	if (env.transparent_ud_qd_override && iwuqp->ud_ring.entry)
 +		free(iwuqp->ud_ring.entry);
  
- 	irdma_free_hw_buf(iwuqp->qp.sq_base, iwuqp->buf_size);
+ 	irdma_free_buf(iwuqp->qp.sq_base, iwuqp->buf_size, iwuqp->alloc_type);
 +	irdma_spin_destroy(&iwuqp->lock);
  	free(iwuqp);
  	return 0;
  
-@@ -2011,13 +2095,61 @@ static inline __u32 calc_type2_mw_stag(__u32 rkey, __u32 mw_rkey)
+@@ -2168,13 +2252,61 @@ static inline __u32 calc_type2_mw_stag(__u32 rkey, __u32 mw_rkey)
  }
  
  /**
@@ -409,7 +409,7 @@ index dcebdd39c..61f9fc01d 100644
  {
  	struct irdma_post_sq_info info;
  	struct irdma_uvcontext *iwvctx;
-@@ -2031,15 +2163,22 @@ int irdma_upost_send(struct ibv_qp *ib_qp, struct ibv_send_wr *ib_wr,
+@@ -2188,15 +2320,22 @@ int irdma_upost_send(struct ibv_qp *ib_qp, struct ibv_send_wr *ib_wr,
  			      ibv_ctx.context);
  	uk_attrs = &iwvctx->uk_attrs;
  
@@ -436,7 +436,7 @@ index dcebdd39c..61f9fc01d 100644
  		memset(&info, 0, sizeof(info));
  		info.wr_id = (__u64)(ib_wr->wr_id);
  		if ((ib_wr->send_flags & IBV_SEND_SIGNALED) ||
-@@ -2106,6 +2245,14 @@ int irdma_upost_send(struct ibv_qp *ib_qp, struct ibv_send_wr *ib_wr,
+@@ -2271,6 +2410,14 @@ int irdma_upost_send(struct ibv_qp *ib_qp, struct ibv_send_wr *ib_wr,
  				info.op.send.ah_id = ah->ah_id;
  				info.op.send.qkey = ib_wr->wr.ud.remote_qkey;
  				info.op.send.dest_qp = ib_wr->wr.ud.remote_qpn;
@@ -451,7 +451,7 @@ index dcebdd39c..61f9fc01d 100644
  			}
  
  			if (ib_wr->send_flags & IBV_SEND_INLINE)
-@@ -2217,6 +2364,29 @@ int irdma_upost_send(struct ibv_qp *ib_qp, struct ibv_send_wr *ib_wr,
+@@ -2382,6 +2529,29 @@ int irdma_upost_send(struct ibv_qp *ib_qp, struct ibv_send_wr *ib_wr,
  	if (reflush)
  		irdma_issue_flush(ib_qp, 1, 0);
  
@@ -482,5 +482,5 @@ index dcebdd39c..61f9fc01d 100644
  
  	return err;
 -- 
-2.51.0.338.gd7d06c2dae-goog
+2.54.0.rc0.605.g598a273b03-goog
 
