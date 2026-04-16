@@ -282,6 +282,8 @@ bool irdma_process_aeq(struct irdma_pci_f *rf)
 		if (ret)
 			break;
 
+		irdma_tel_send_aeq_events(rf, info);
+
 		if (info->aeqe_overflow) {
 			ibdev_err(&iwdev->ibdev, "AEQ has overflowed\n");
 			rf->reset = true;
@@ -2078,6 +2080,7 @@ void irdma_ctrl_deinit_hw(struct irdma_pci_f *rf)
 		ibdev_warn(&rf->iwdev->ibdev, "bad init_state = %d\n", rf->init_state);
 		break;
 	}
+	irdma_tel_deinit(rf);
 }
 
 /**
@@ -2218,6 +2221,10 @@ int irdma_ctrl_init_hw(struct irdma_pci_f *rf)
 		if (status)
 			break;
 		rf->init_state = INITIAL_STATE;
+
+		status = irdma_tel_init(rf);
+		if (status)
+			break;
 
 		status = irdma_create_cqp(rf);
 		if (status)

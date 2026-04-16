@@ -57,6 +57,7 @@
 #include "iidc.h"
 #include "iidc_rdma_idpf.h"
 #include "irdma_kcompat.h"
+#include "telemetry.h"
 #include "irdma-abi.h"
 #include "verbs.h"
 #include "user.h"
@@ -434,6 +435,7 @@ struct irdma_pci_f {
 	atomic_t ceq0_int_good;
 	atomic_t ceq0_wa_enable;
 	u8 rca_config;
+	struct irdma_telemetry telemetry;
 };
 
 struct irdma_ae_info {
