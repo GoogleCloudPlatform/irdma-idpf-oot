@@ -1258,6 +1258,7 @@ struct irdma_aeqe_info {
 	bool err_rq_idx_valid:1;
 	u8 q2_data_written;
 	u8 ae_src;
+	u64 raw_aeqe[2];
 };
 
 struct irdma_allocate_stag_info {

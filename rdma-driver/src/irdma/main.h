@@ -53,6 +53,7 @@
 #include "cm.h"
 #include "iidc.h"
 #include "irdma_kcompat.h"
+#include "telemetry.h"
 #include "irdma-abi.h"
 #include "verbs.h"
 #include "user.h"
@@ -398,6 +399,7 @@ struct irdma_pci_f {
 	u32 chk_stag;
 	atomic_t ceq0_int_good;
 	atomic_t ceq0_wa_enable;
+	struct irdma_telemetry telemetry;
 };
 
 struct irdma_ae_info {

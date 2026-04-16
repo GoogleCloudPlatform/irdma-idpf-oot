@@ -37,6 +37,7 @@ irdma-objs := main.o      \
 	      configfs.o  \
 	      virtchnl.o  \
 	      irdma_kcompat.o \
-	      debugfs.o
+	      debugfs.o \
+	      telemetry.o
 
 CFLAGS_trace.o = -I$(src)

@@ -5482,6 +5482,9 @@ int irdma_sc_get_next_aeqe(struct irdma_sc_aeq *aeq,
 	/* Ensure AEQE contents are read after valid bit is checked */
 	dma_rmb();
 
+	info->raw_aeqe[0] = le64_to_cpu(aeqe[0]);
+	info->raw_aeqe[1] = le64_to_cpu(aeqe[1]);
+
 	get_64bit_val(aeqe, 0, &compl_ctx);
 
 	print_hex_dump_debug("WQE: AEQ_ENTRY WQE", DUMP_PREFIX_OFFSET, 16, 8,
