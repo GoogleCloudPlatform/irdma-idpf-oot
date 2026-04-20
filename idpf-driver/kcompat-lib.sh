@@ -108,20 +108,16 @@ function find-decl() {
 	# if user wants to preprocess the file to exclude false positives,
 	# use unifdef to preprocess only when unifdef is available
 	if [[ -n "${PREPROCESS_UNIFDEF}" ]] && command -v unifdef >/dev/null 2>&1; then
-		local tmp_out="/tmp/kcompat_unifdef_$$.out"
-		> "${tmp_out}"
 		for f in $files; do
 			if [[ "$f" == "-" ]]; then
-				cat - >> "${tmp_out}"
+				cat -
 			else
-				unifdef -k -t ${PREPROCESS_UNIFDEF} "$f" >> "${tmp_out}" || [ $? -le 1 ]
+				unifdef -k -t ${PREPROCESS_UNIFDEF} "$f" 2>/dev/null || [ $? -le 1 ]
 			fi
-		done
-		#shellcheck disable=SC2086
-		awk "
+		done | awk "
 			/^$WB*\*/ {next}
 			$what, $end
-		" ${tmp_out}
+		"
 	else
 		# shellcheck disable=SC2086
 		awk "
