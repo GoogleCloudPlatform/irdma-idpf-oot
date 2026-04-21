@@ -1,4 +1,4 @@
-ifeq (${SKIP_CROSS_COMPILE},)
+ifneq (${USE_CROSS_COMPILE},)
 CC              = $(CROSS_COMPILE)cc
 endif
 # SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB
