@@ -10,7 +10,7 @@ Summary: Intel(R) Ethernet Connection E800 Series Linux iRDMA Driver
 %if 0%{?_IRDMA_VER_:1}
 %define version %{_IRDMA_VER_}
 %else
-%define version 0.0.129.24
+%define version 2.9.0
 %endif
 %if 0%{?_IRDMA_REL_:1}
 %define release %{_IRDMA_REL_}
@@ -20,7 +20,7 @@ Summary: Intel(R) Ethernet Connection E800 Series Linux iRDMA Driver
 Version: %{version}
 Release: %{release}
 Source: %{name}-%{version}.tar.gz
-Vendor: Intel Corporation
+Vendor: Google LLC
 License: GPLv2 and Redistributable, no modification permitted
 ExclusiveOS: linux
 Group: System Environment/Kernel

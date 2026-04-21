@@ -3,7 +3,7 @@ set -e
 
 # Variable for our package
 NAME="irdma-dkms"
-VERSION="0.0.129.24"
+VERSION="2.9.0"
 
 case "$1" in
     remove|deconfigure)

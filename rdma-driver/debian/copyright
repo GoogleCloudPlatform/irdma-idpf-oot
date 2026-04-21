@@ -1,7 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-# Leave out as we are not sure if this package is going to be upstreamed
-# Upstream-Name: irdma-dkms
-# Upstream-Contact: Intel Corporation <support.intel.com>
+Upstream-Name: irdma
+Upstream-Contact: Intel Corporation <support.intel.com>
 Source: http://support.intel.com
 
 Files: *

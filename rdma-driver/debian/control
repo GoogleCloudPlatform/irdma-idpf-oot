@@ -1,10 +1,10 @@
 Source: irdma-dkms
 Section: kernel
 Priority: optional
-Maintainer: Intel Corporation <support.intel.com>
+Maintainer: Google LLC <support.google.com>
 Build-Depends: debhelper-compat (= 13), dkms
 Standards-Version: 4.5.0
-Homepage: http://support.intel.com
+Homepage: http://support.google.com
 
 Package: irdma-dkms
 Architecture: all

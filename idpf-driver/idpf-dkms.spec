@@ -1,9 +1,9 @@
 Name: idpf-dkms
 Summary: DKMS build of Infrastructure Data Path Function Linux Driver
-Version: 0.0.659
+Version: 2.9.0
 Release: 1
 Source: %{name}-%{version}.tar.gz
-Vendor: Intel Corporation
+Vendor: Google LLC
 License: GPLv2
 ExclusiveOS: linux
 Group: System Environment/Kernel

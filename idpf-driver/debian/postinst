@@ -2,7 +2,7 @@
 set -e
 
 NAME="idpf-dkms"
-VERSION="0.0.659"
+VERSION="2.9.0"
 
 # PCI-related macros and helpers
 find_file() {
