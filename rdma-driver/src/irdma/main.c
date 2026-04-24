@@ -1038,7 +1038,7 @@ static int irdma_probe(struct auxiliary_device *aux_dev, const struct auxiliary_
 	}
 
 	auxiliary_set_drvdata(aux_dev, iwdev);
-
+	printk(KERN_ERR "IRDMA register notifier post\n");
 	return 0;
 
 err_ibreg:
