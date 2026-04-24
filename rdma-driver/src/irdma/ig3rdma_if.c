@@ -427,6 +427,7 @@ static int ig3rdma_vport_probe(struct auxiliary_device *aux_dev, const struct au
 	err = irdma_register_notifiers(iwdev);
 	if (err)
 		goto err_all;
+	printk(KERN_ERR "IRDMA register notifier post\n");
 	return 0;
 
 err_all:
