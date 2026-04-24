@@ -88,6 +88,7 @@ static void dump_help(void)
 	dbg_vsnprintf(" cq <n>                  <n> is a cq number or 'all'\n");
 	dbg_vsnprintf(" cqp-nop\n");
 	dbg_vsnprintf(" cqp-rq\n");
+	dbg_vsnprintf(" reset\n");
 	cmddone = true;
 }
 
@@ -1222,6 +1223,14 @@ static ssize_t irdma_dbg_dump_read(struct file *filp,
 			irdma_cqp_nop(&rf->sc_dev);
 		else if (strncasecmp(cmd_buf, "cqp-rq", 6) == 0)
 			irdma_cqp_rca_post_rqes(&rf->sc_dev);
+		else if (strncasecmp(cmd_buf, "reset", 5) == 0) {
+			if (!rf->reset) {
+				struct iidc_core_dev_info *cdev_info = rf->cdev;
+				pr_err("Reset request is requested\n");
+				rf->reset = true;
+				cdev_info->ops->request_reset(cdev_info, IIDC_CORER);
+			}
+		}
 		else
 			dump_help();
 		cmdnew = false;
