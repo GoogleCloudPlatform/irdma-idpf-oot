@@ -27,6 +27,8 @@ get_kvercode = $(shell [ "${1}" -ge 0 -a "${1}" -le 255 2>/dev/null ] && \
                        [ "${3}" -ge 0 -a "${3}" -le 255 2>/dev/null ] && \
                        printf %d $$(( ( ${1} << 16 ) + ( ${2} << 8 ) + ( ${3} ) )) )
 
+mlx_compat := $(shell grep -q "mlx_compat" /proc/kallsyms && echo "mlx compat required")
+
 ################
 # depmod Macro #
 ################
@@ -43,6 +45,10 @@ DRIVER_UPPERCASE := $(shell echo ${DRIVER} | tr "[:lower:]" "[:upper:]")
 
 ifeq (,${BUILD_KERNEL})
 BUILD_KERNEL=$(shell uname -r)
+endif
+
+ifeq (, ${BUILD_ARCH})
+BUILD_ARCH=$(shell uname -m)
 endif
 
 # Kernel Search Path
@@ -78,6 +84,20 @@ else
   KOBJ :=  ${KSRC}
 endif
 endif
+
+MLNX_SP :=  /usr/src/ofa_kernel/${BUILD_ARCH}/${BUILD_KERNEL} \
+            /usr/src/ofa_kernel/default
+
+test_dir = $(shell [ -e ${dir}/include/linux ] && echo ${dir})
+MLNX_SP := $(foreach dir, ${MLNX_SP}, ${test_dir})
+
+ifneq (, ${mlx_compat})
+ifeq (, ${MLNX_SRC})
+  MLNX_SRC := $(firstword ${MLNX_SP})
+endif
+endif
+
+
 
 SCRIPT_PATH := ${KSRC}/scripts
 info_signed_modules =
@@ -319,9 +339,23 @@ minimum_kver_check = $(eval $(call _minimum_kver_check,${1},${2},${3}))
 #
 
 # call script that populates defines automatically
+
+ifneq (${MLNX_SRC},)
+  KCOMPAT_KSRC := ${MLNX_SRC}
+  KCOMPAT_KSRC_ADDTL := ${KSRC}
+  UNIFDEF := $(shell command -v unifdef 2>/dev/null)
+  ifneq ($(UNIFDEF), )
+    UNIFDEF_FILE := $(shell unifdef -DLINUX_BACKPORT -B ${MLNX_SRC}/compat/config.h > config.h; echo $(realpath config.h))
+    PREPROCESS_UNIFDEF := "-f ${UNIFDEF_FILE}"
+  endif
+else
+  KCOMPAT_KSRC := ${KSRC}
+  KCOMPAT_KSRC_ADDTL :=
+endif
+
 $(if $(shell \
     $(if $(findstring 1,${V}),,QUIET_COMPAT=1) \
-    KSRC=${KSRC} OUT=${src}/kcompat_generated_defs.h CONFIG_FILE=${CONFIG_FILE} \
+    KSRC=${KCOMPAT_KSRC} KSRC_ADDTL=${KCOMPAT_KSRC_ADDTL} OUT=${src}/kcompat_generated_defs.h CONFIG_FILE=${CONFIG_FILE} PREPROCESS_UNIFDEF=${PREPROCESS_UNIFDEF} \
     bash ${src}/kcompat-generator.sh && echo ok), , $(error kcompat-generator.sh failed))
 
 ################
@@ -449,6 +483,16 @@ endif
 # W -- if set, enables the W= kernel warnings options
 # C -- if set, enables the C= kernel sparse build options
 #
+#
+
+ifneq (${MLNX_SRC},)
+  export AUTOCONF_HDR := -include ${KSRC}/include/generated/autoconf.h
+  export KCONF_HDR := -include ${KSRC}/include/linux/kconfig.h
+  export UTSRELEASE_HDR := -include ${KSRC}/include/generated/utsrelease.h
+  export MLNX_COMPAT_HDRS := -include ${MLNX_SRC}/include/linux/compat-2.6.h -I${MLNX_SRC}/include -I${MLNX_SRC}/include/uapi
+  export KBUILD_EXTRA_SYMBOLS := ${KBUILD_EXTRA_SYMBOLS} ${MLNX_SRC}/Module.symvers
+endif
+
 kernelbuild = ${Q}$(call warn_signed_modules) \
               ${MAKE} $(if ${GCC_I_SYS},CC="${GCC_I_SYS}") \
                       ${CCFLAGS_VAR}="${EXTRA_CFLAGS}" \

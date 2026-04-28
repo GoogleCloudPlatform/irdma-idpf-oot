@@ -1,0 +1,11 @@
+idpf-dkms (2.9.0-1) UNRELEASED; urgency=medium
+
+  [ Google LLC ]
+  * Initial dev commit of the idpf driver dkms package for Debian/Ubuntu
+  * Ported from RPM spec file idpf-dkms.spec
+
+  [ Google LLC ]
+  * Update version to 0.0.659. v2.8 drop of the idpf driver
+  * Update version to 2.9.0: v2.9 drop of the idpf driver
+
+ -- Google LLC <support.google.com>  Mon, 20 Apr 2026 17:34:49 -0700

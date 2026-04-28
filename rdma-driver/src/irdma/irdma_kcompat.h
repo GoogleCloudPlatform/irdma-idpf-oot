@@ -47,13 +47,19 @@
 #endif
 
 #include "irdma-abi.h"
-#if !defined(__OFED_BUILD__) && !defined(__OFED_4_8__)
+// For DOCA-OFED, still include irdma kcompat for optimal build
+#if (!defined(__OFED_BUILD__) && !defined(__OFED_4_8__)) ||                    \
+    defined(__DOCA_OFED__)
 #include "irdma_kcompat_gen.h"
 #endif
 #include "distro_ver.h"
 
 #if defined(__OFED_BUILD__) || defined(__OFED_4_8__)
+#if defined(__DOCA_OFED__)
+#include "doca_ofed_kcompat.h"
+#else
 #include "ofed_kcompat.h"
+#endif
 #elif defined(RHEL_RELEASE_CODE)
 #include "rhel_kcompat.h"
 #elif defined(CONFIG_SUSE_KERNEL)

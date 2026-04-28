@@ -1,0 +1,20 @@
+Source: idpf-dkms
+Section: kernel
+Priority: optional
+Maintainer: Google LLC <support.google.com>
+Build-Depends: debhelper-compat (= 13), dkms
+Standards-Version: 4.5.0
+Homepage: http://support.google.com
+
+Package: idpf-dkms
+Architecture: all
+Depends: dkms, 
+         findutils, 
+         gawk, 
+         bash, 
+         linux-headers-generic | linux-headers-686-pae | linux-headers-amd64 | linux-headers,
+         ${misc:Depends}
+Provides: idpf-dkms
+Description: DKMS build of Infrastructure Data Path Function Linux Driver
+ This package contains the Infrastructure Data Path Function Linux Driver,
+ managed via the Dynamic Kernel Module Support (DKMS) framework.
