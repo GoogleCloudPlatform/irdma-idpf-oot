@@ -281,7 +281,7 @@ function gen() {
 		shift 3
 
 		if [ -z ${UNIFDEF_MODE:+1} ]; then
-			found_fmt="#define %s 1\n"
+			found_fmt="#ifndef %s\n#define %s 1\n#endif\n"
 			missing_fmt=""
 		else
 			found_fmt="-D%s\n"
@@ -289,7 +289,7 @@ function gen() {
 		fi
 
 		if [ "${actual_str}" = "${expect_str}" ]; then
-			printf -- "$found_fmt" "$define"
+			printf -- "$found_fmt" "$define" "$define"
 		else
 			printf -- "$missing_fmt" "$define"
 		fi
@@ -416,7 +416,7 @@ function gen() {
 				found_fmt="-D%s\n"
 				missing_fmt="-U%s\n"
 			} else {
-				found_fmt="#define %s 1\n"
+				found_fmt="#ifndef %s\n#define %s 1\n#endif\n"
 				missing_fmt=""
 			}
 

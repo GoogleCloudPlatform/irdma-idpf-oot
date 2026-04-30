@@ -293,7 +293,7 @@ function gen() {
 		$0 ~ pattern { found = 1 }
 		END {
 			if (lacks && !found && not_empty || matches && found || absent && !found)
-				print "#define", define
+				print "#ifndef", define, "\n#define", define, "\n#endif"
 		}
 	' <<< "$body"
 }
