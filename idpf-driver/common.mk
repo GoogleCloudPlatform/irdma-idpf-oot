@@ -489,7 +489,9 @@ ifneq (${MLNX_SRC},)
   export AUTOCONF_HDR := -include ${KSRC}/include/generated/autoconf.h
   export KCONF_HDR := -include ${KSRC}/include/linux/kconfig.h
   export UTSRELEASE_HDR := -include ${KSRC}/include/generated/utsrelease.h
-  export MLNX_COMPAT_HDRS := -include ${MLNX_SRC}/include/linux/compat-2.6.h -I${MLNX_SRC}/include -I${MLNX_SRC}/include/uapi
+  # Note: Do not explicitly include compat-2.6.h here as it causes build conflicts
+  # in environments where newer compatibility headers are used.
+  export MLNX_COMPAT_HDRS := -I${MLNX_SRC}/include -I${MLNX_SRC}/include/uapi
   export KBUILD_EXTRA_SYMBOLS := ${KBUILD_EXTRA_SYMBOLS} ${MLNX_SRC}/Module.symvers
 endif
 
