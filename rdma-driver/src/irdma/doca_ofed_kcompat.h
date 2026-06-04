@@ -88,7 +88,8 @@
 #define IP_ROUTE_OUTPUT_VER_2
 #endif
 
-#if defined(RHEL_9_1) || defined(RHEL_9_2) || defined(RHEL_9_3) || defined(RHEL_9_4) || defined(RHEL_9_5)
+#if defined(RHEL_9_1) || defined(RHEL_9_2) || defined(RHEL_9_3) ||             \
+    defined(RHEL_9_4) || defined(RHEL_9_5)
 #define GLOBAL_QP_MEM
 #define IN_IFADDR
 #endif
@@ -96,4 +97,30 @@
 #ifdef RHEL_9_0
 #define IN_IFADDR
 #endif
+
+#ifdef UBUNTU_240404
+/* Ubuntu 24.04.4 - Linux 6.17.0 */
+#define GLOBAL_QP_MEM
+#define IN_IFADDR
+#define COPY_USER_PGADDR_VER_4
+#define IP_ROUTE_OUTPUT_VER_2
+#ifndef HAVE_TIMER_DELETE
+#define HAVE_TIMER_DELETE
+#endif
+#endif /* UBUNTU_240404 */
+
+#if defined(UBUNTU_240402) || defined(UBUNTU_240403)
+/* Ubuntu 24.04.3 - Linux 6.14.0 HWE */
+#define GLOBAL_QP_MEM
+#define IN_IFADDR
+#define COPY_USER_PGADDR_VER_4
+#define IP_ROUTE_OUTPUT_VER_2
+#endif /* UBUNTU_240403 HWE */
+
+#ifdef UBUNTU_2404
+/* Ubuntu 24.04 - Linux 6.8.0 */
+#define GLOBAL_QP_MEM
+#define IN_IFADDR
+#define COPY_USER_PGADDR_VER_4
+#endif /* UBUNTU_2404 */
 #endif /* DOCA_OFED_KCOMPAT_H */
