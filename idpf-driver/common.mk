@@ -345,7 +345,7 @@ ifneq (${MLNX_SRC},)
   KCOMPAT_KSRC_ADDTL := ${KSRC}
   UNIFDEF := $(shell command -v unifdef 2>/dev/null)
   ifneq ($(UNIFDEF), )
-    UNIFDEF_FILE := $(shell unifdef -DLINUX_BACKPORT -B ${MLNX_SRC}/compat/config.h > config.h; echo $(realpath config.h))
+    UNIFDEF_FILE := $(shell unifdef -DLINUX_BACKPORT -B ${MLNX_SRC}/compat/config.h > config.h; echo $$(realpath config.h))
     PREPROCESS_UNIFDEF := "-f ${UNIFDEF_FILE}"
   endif
 else
