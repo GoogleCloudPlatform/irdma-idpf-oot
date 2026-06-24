@@ -1,4 +1,4 @@
-idpf-dkms (2.9.0-1) UNRELEASED; urgency=medium
+idpf-dkms (2.9.0-2) UNRELEASED; urgency=medium
 
   [ Google LLC ]
   * Initial dev commit of the idpf driver dkms package for Debian/Ubuntu
@@ -7,5 +7,6 @@ idpf-dkms (2.9.0-1) UNRELEASED; urgency=medium
   [ Google LLC ]
   * Update version to 0.0.659. v2.8 drop of the idpf driver
   * Update version to 2.9.0: v2.9 drop of the idpf driver
+  * Add unifdef as dependency for DOCA coexistence support.
 
- -- Google LLC <support.google.com>  Mon, 20 Apr 2026 17:34:49 -0700
+ -- Google LLC <support.google.com>  Tue, 23 Jun 2026 17:01:37 -0700
