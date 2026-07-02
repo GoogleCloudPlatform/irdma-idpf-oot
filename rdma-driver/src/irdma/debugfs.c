@@ -38,6 +38,9 @@ static u32 cmddone;
 #define IRDMA_DUMP_BUF_SIZE             16384
 #define IRDMA_DUMP_BUF_HALF_FULL        (IRDMA_DUMP_BUF_SIZE / 2)
 
+/* Enable the deferred deletion by default */
+int ah_deferred_delete = 1;
+
 struct hmc_find {
 	dma_addr_t paddr;
 	bool fnd;
@@ -89,6 +92,7 @@ static void dump_help(void)
 	dbg_vsnprintf(" cqp-nop\n");
 	dbg_vsnprintf(" cqp-rq\n");
 	dbg_vsnprintf(" reset\n");
+	dbg_vsnprintf(" ah-deferred-deletion <n>   <n> is 0 or 1\n");
 	cmddone = true;
 }
 
@@ -1224,6 +1228,9 @@ static ssize_t irdma_dbg_dump_read(struct file *filp,
 	int bytes_not_copied;
 	int len;
 
+	int state;
+	int ret;
+
 	rf = iwdev->rf;
 	if (cmddone) {
 		cmdnew = true;
@@ -1251,8 +1258,16 @@ static ssize_t irdma_dbg_dump_read(struct file *filp,
 				rf->reset = true;
 				cdev_info->ops->request_reset(cdev_info, IIDC_CORER);
 			}
-		}
-		else
+		} else if (strncasecmp(cmd_buf, "ah-deferred-deletion", 20) == 0) {
+			ret = sscanf(&cmd_buf[21], "%d", &state);
+			if (ret == 1 && (state == 0 || state == 1)) {
+				ah_deferred_delete = state;
+				dbg_vsnprintf("ah-deferred-deletion set to %d\n", ah_deferred_delete);
+			} else {
+				dbg_vsnprintf("ah-deferred-deletion: Invalid value\n");
+			}
+			cmddone = true;
+		} else
 			dump_help();
 		cmdnew = false;
 	}
