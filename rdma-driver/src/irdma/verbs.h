@@ -82,9 +82,11 @@ struct irdma_ah {
 	u8 sgid_index;
 	union ib_gid dgid;
 	struct hlist_node list;
-	refcount_t refcnt;
+	u64 refcnt;
 	struct irdma_ah *parent_ah;	/* AH from cached list */
 	bool sleep;
+	struct list_head node;
+	u64 deletion_timestamp;
 };
 
 struct irdma_hmc_pble {

@@ -159,7 +159,7 @@ static void irdma_complete_cqp_request(struct irdma_cqp *cqp,
 				       struct irdma_cqp_request *cqp_request)
 {
 	struct irdma_sc_dev* dev = cqp->sc_cqp.dev;
-	const u64 duration = ktime_get_ns() - cqp_request->submission_ts;
+	const u64 duration = ktime_get_raw_ns() - cqp_request->submission_ts;
 
 	if (duration > 2000000000) dev->cqp_cmds_latency_2s++;
 	if (duration > dev->cqp_cmd_peak_latency[cqp_request->info.cqp_cmd])
@@ -1988,7 +1988,7 @@ void irdma_ctrl_deinit_hw(struct irdma_pci_f *rf)
 {
 	enum init_completion_state state = rf->init_state;
 
-	if ((rf->sc_dev.hw_wa & TIMER_NEEDED) && rf->poll_thread) {
+	if (rf->poll_thread) {
 		kthread_stop(rf->poll_thread);
 		rf->poll_thread = NULL;
 	}

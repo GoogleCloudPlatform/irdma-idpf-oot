@@ -1098,7 +1098,7 @@ int irdma_handle_cqp_op(struct irdma_pci_f *rf,
 	if (rf->reset)
 		return (info->create ? -EBUSY : 0);
 
-	cqp_request->submission_ts = ktime_get_ns();
+	cqp_request->submission_ts = ktime_get_raw_ns();
 	irdma_get_cqp_request(cqp_request);
 	status = irdma_process_cqp_cmd(dev, info);
 	if (status)

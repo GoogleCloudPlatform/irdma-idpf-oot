@@ -661,6 +661,113 @@ static void irdma_poll_cq3(struct irdma_pci_f *rf)
 #define LOW_FREQ_MICROS  1000
 #define HIGH_FREQ_MICROS 25
 
+static void sleepable_ah_purge(struct irdma_device *iwdev)
+{
+	struct list_head *entry, *tmp;
+
+	mutex_lock(&iwdev->ah_tbl_lock);
+	list_for_each_safe(entry, tmp, &iwdev->ah_deletion_list) {
+		struct irdma_ah *ah = container_of(entry, struct irdma_ah, node);
+
+		irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah, IRDMA_OP_AH_DESTROY,
+				false, NULL, ah);
+
+		irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_ahs,
+				ah->sc_ah.ah_info.ah_idx);
+
+		hash_del(&ah->list);
+		iwdev->ah_list_cnt--;
+		iwdev->ah_deletion_list_cnt--;
+		list_del(&ah->node);
+		kfree(ah->parent_ah);
+	}
+	mutex_unlock(&iwdev->ah_tbl_lock);
+}
+
+static void nosleep_ah_purge(struct irdma_device *iwdev)
+{
+	struct list_head *entry, *tmp;
+	unsigned long flags;
+
+	spin_lock_irqsave(&iwdev->ah_nosleep_tbl_lock, flags);
+	list_for_each_safe(entry, tmp, &iwdev->ah_nosleep_deletion_list) {
+		struct irdma_ah *ah = container_of(entry, struct irdma_ah, node);
+
+		irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah, IRDMA_OP_AH_DESTROY,
+				false, NULL, ah);
+
+		irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_ahs,
+				ah->sc_ah.ah_info.ah_idx);
+
+		hash_del(&ah->list);
+		iwdev->ah_nosleep_list_cnt--;
+		iwdev->ah_nosleep_deletion_list_cnt--;
+		list_del(&ah->node);
+		kfree(ah->parent_ah);
+	}
+	spin_unlock_irqrestore(&iwdev->ah_nosleep_tbl_lock, flags);
+}
+
+static void ah_purge(struct irdma_device *iwdev)
+{
+	sleepable_ah_purge(iwdev);
+	nosleep_ah_purge(iwdev);
+}
+
+#define AH_AGE_THRESH_NANOS    5000000000ULL  /* 5 seconds. */
+
+static void ah_age_out(struct irdma_device *iwdev)
+{
+	struct irdma_ah *ah;
+	unsigned long flags;
+	u64 now;
+
+	if (!iwdev)
+		return;
+
+	mutex_lock(&iwdev->ah_tbl_lock);
+	if (!list_empty(&iwdev->ah_deletion_list)) {
+		ah = list_first_entry(&iwdev->ah_deletion_list,
+				      struct irdma_ah, node);
+		now = ktime_get_raw_ns();
+		if ((now - ah->deletion_timestamp) > AH_AGE_THRESH_NANOS) {
+			irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah, IRDMA_OP_AH_DESTROY,
+					false, NULL, ah);
+
+			irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_ahs,
+					ah->sc_ah.ah_info.ah_idx);
+
+			hash_del(&ah->list);
+			iwdev->ah_list_cnt--;
+			iwdev->ah_deletion_list_cnt--;
+			list_del(&ah->node);
+			kfree(ah->parent_ah);
+		}
+	}
+	mutex_unlock(&iwdev->ah_tbl_lock);
+
+	spin_lock_irqsave(&iwdev->ah_nosleep_tbl_lock, flags);
+	if (!list_empty(&iwdev->ah_nosleep_deletion_list)) {
+		ah = list_first_entry(&iwdev->ah_nosleep_deletion_list,
+				      struct irdma_ah, node);
+		now = ktime_get_raw_ns();
+		if ((now - ah->deletion_timestamp) > AH_AGE_THRESH_NANOS) {
+			irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah, IRDMA_OP_AH_DESTROY,
+					false, NULL, ah);
+
+			irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_ahs,
+					ah->sc_ah.ah_info.ah_idx);
+
+			hash_del(&ah->list);
+			iwdev->ah_nosleep_list_cnt--;
+			iwdev->ah_nosleep_deletion_list_cnt--;
+			list_del(&ah->node);
+			kfree(ah->parent_ah);
+		}
+	}
+	spin_unlock_irqrestore(&iwdev->ah_nosleep_tbl_lock, flags);
+}
+
 static int poll_thread(void *context)
 {
 	struct irdma_pci_f *rf = context;
@@ -668,9 +775,10 @@ static int poll_thread(void *context)
 
 	msleep(200);
 
-	rf->sc_dev.last_cqp_poll_ts = ktime_get_ns();
+	rf->sc_dev.last_cqp_poll_ts = ktime_get_raw_ns();
 	do {
 		usleep_range(sleep_micros, sleep_micros + HIGH_FREQ_MICROS);
+		ah_age_out(rf->iwdev);
 		if (rf->sc_dev.hw_wa & AEQ_POLL) {
 			irdma_process_aeq(rf);
 			continue;
@@ -678,12 +786,12 @@ static int poll_thread(void *context)
 		if (rf->sc_dev.hw_wa & CCQ_CQ3_POLL) {
 			struct irdma_sc_cq *ccq = &rf->ccq.sc_cq;
 
-			const u64 tmp = ktime_get_ns();
-			const u64 dur = tmp - rf->sc_dev.last_cqp_poll_ts;
+			const u64 now = ktime_get_raw_ns();
+			const u64 dur = now - rf->sc_dev.last_cqp_poll_ts;
 			if (dur > rf->sc_dev.peak_cqp_poll_interval)
 				rf->sc_dev.peak_cqp_poll_interval = dur;
 
-			rf->sc_dev.last_cqp_poll_ts = tmp;
+			rf->sc_dev.last_cqp_poll_ts = now;
 
 			if (ccq)
 				irdma_cqp_ce_handler(rf, ccq);
@@ -770,6 +878,7 @@ static void irdma_remove(struct auxiliary_device *aux_dev)
 	}
 
 	irdma_ib_unregister_device(iwdev);
+	ah_purge(iwdev);
 	irdma_unregister_notifiers(iwdev);
 	irdma_deinit_device(iwdev);
 	ib_dealloc_device(&iwdev->ibdev);
@@ -891,6 +1000,8 @@ static int irdma_fill_device_info(struct irdma_device *iwdev,
 
 	mutex_init(&iwdev->ah_tbl_lock);
 	spin_lock_init(&iwdev->ah_nosleep_tbl_lock);
+	INIT_LIST_HEAD(&iwdev->ah_deletion_list);
+	INIT_LIST_HEAD(&iwdev->ah_nosleep_deletion_list);
 
 	iwdev->netdev = cdev_info->netdev;
 	iwdev->vsi_num = cdev_info->vport_id;
@@ -955,6 +1066,8 @@ static int irdma_probe(struct auxiliary_device *aux_dev, const struct auxiliary_
 	int err;
 	struct irdma_handler *hdl;
 
+	printk(KERN_ERR "AH dedup and deferred deletion enabled\n");
+
 	if (cdev_info->ver.major != IIDC_MAJOR_VER) {
 		pr_info("irdma: RDMA/LAN interface version mismatch (Expected %0d.%0d Received %0d.%0d). Unable to initialize RDMA.\n",
 			IIDC_MAJOR_VER, IIDC_MINOR_VER,
@@ -999,10 +1112,8 @@ static int irdma_probe(struct auxiliary_device *aux_dev, const struct auxiliary_
 	if (irdma_fw_major_ver(&rf->sc_dev) == 2 && mod_rdpu_bw)
 		irdma_modify_rdpu_bw(rf);
 
-	if (rf->rdma_ver >= IRDMA_GEN_3 &&
-	    rf->sc_dev.hw_wa & TIMER_NEEDED)
-		rf->poll_thread =
-			kthread_run(poll_thread, rf, "dpc polling thread");
+	rf->poll_thread =
+		kthread_run(poll_thread, rf, "dpc polling thread");
 
 	if (rf->rdma_ver == IRDMA_GEN_2) {
 		if (irdma_set_attr_from_fragcnt(&rf->sc_dev, rf->fragcnt_limit))

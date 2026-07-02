@@ -425,6 +425,8 @@ struct irdma_device {
 	DECLARE_HASHTABLE(ah_nosleep_hash_tbl, 8);
 	struct mutex ah_tbl_lock;
 	spinlock_t ah_nosleep_tbl_lock;
+	struct list_head ah_deletion_list;
+	struct list_head ah_nosleep_deletion_list;
 #ifdef CONFIG_DEBUG_FS
 	u64 ah_reused;
 	u64 ah_nosleep_reused;
@@ -433,6 +435,12 @@ struct irdma_device {
 	u32 ah_list_hwm;
 	u32 ah_nosleep_list_cnt;
 	u32 ah_nosleep_list_hwm;
+	u32 ah_deletion_list_cnt;
+	u32 ah_deletion_list_cnt_total;
+	u32 ah_deletion_list_cnt_peak;
+	u32 ah_nosleep_deletion_list_cnt;
+	u32 ah_nosleep_deletion_list_cnt_total;
+	u32 ah_nosleep_deletion_list_cnt_peak;
 	u32 roce_cwnd;
 	u32 roce_ackcreds;
 	u32 vendor_id;

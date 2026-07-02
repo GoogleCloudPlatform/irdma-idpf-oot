@@ -1039,7 +1039,14 @@ static bool irdma_sleepable_ah_exists(struct irdma_device *iwdev,
 			new_ah->sc_ah.ah_info.flow_label = ah->sc_ah.ah_info.flow_label;
 		if (!memcmp(&ah->sc_ah.ah_info, &new_ah->sc_ah.ah_info,
 			    sizeof(ah->sc_ah.ah_info))) {
-			refcount_inc(&ah->refcnt);
+			if (!ah->refcnt) {
+				/* Item was on the pending deletion list, so
+				 * remove since there's now a new reference to it.
+				 */
+				list_del(&ah->node);
+				iwdev->ah_deletion_list_cnt--;
+			}
+			ah->refcnt++;
 			new_ah->parent_ah = ah;
 			return true;
 		}
@@ -1057,7 +1064,7 @@ static bool irdma_sleepable_ah_exists(struct irdma_device *iwdev,
 	iwdev->ah_list_cnt++;
 	if (iwdev->ah_list_cnt > iwdev->ah_list_hwm)
 		iwdev->ah_list_hwm = iwdev->ah_list_cnt;
-	refcount_set(&ah->refcnt, 1);
+	ah->refcnt = 1;
 
 	return false;
 }
@@ -1091,7 +1098,14 @@ static bool irdma_nosleep_ah_exists(struct irdma_device *iwdev,
 			new_ah->sc_ah.ah_info.flow_label = ah->sc_ah.ah_info.flow_label;
 		if (!memcmp(&ah->sc_ah.ah_info, &new_ah->sc_ah.ah_info,
 			    sizeof(ah->sc_ah.ah_info))) {
-			refcount_inc(&ah->refcnt);
+			if (!ah->refcnt) {
+				/* Item was on the pending deletion list, so
+				 * remove since there's now a new reference to it.
+				 */
+				list_del(&ah->node);
+				iwdev->ah_nosleep_deletion_list_cnt--;
+			}
+			ah->refcnt++;
 			new_ah->parent_ah = ah;
 			return true;
 		}
@@ -1109,7 +1123,7 @@ static bool irdma_nosleep_ah_exists(struct irdma_device *iwdev,
 	iwdev->ah_nosleep_list_cnt++;
 	if (iwdev->ah_nosleep_list_cnt > iwdev->ah_nosleep_list_hwm)
 		iwdev->ah_nosleep_list_hwm = iwdev->ah_nosleep_list_cnt;
-	refcount_set(&ah->refcnt, 1);
+	ah->refcnt = 1;
 
 	return false;
 }
@@ -1123,7 +1137,7 @@ static bool irdma_nosleep_ah_exists(struct irdma_device *iwdev,
  *
  * returns true if entry is deleted else false
  */
-static bool irdma_ah_hash_delete(struct irdma_device *iwdev,
+static __maybe_unused bool irdma_ah_hash_delete(struct irdma_device *iwdev,
 			    struct irdma_ah *ah)
 {
 	unsigned long flags;
@@ -1131,7 +1145,8 @@ static bool irdma_ah_hash_delete(struct irdma_device *iwdev,
 	if (ah->parent_ah) {
 		if (ah->sleep) {
 			mutex_lock(&iwdev->ah_tbl_lock);
-			if (!refcount_dec_and_test(&ah->parent_ah->refcnt)) {
+			ah->parent_ah->refcnt--;
+			if (ah->parent_ah->refcnt) {
 				mutex_unlock(&iwdev->ah_tbl_lock);
 				return false;
 			}
@@ -1141,7 +1156,8 @@ static bool irdma_ah_hash_delete(struct irdma_device *iwdev,
 			mutex_unlock(&iwdev->ah_tbl_lock);
 		} else {
 			spin_lock_irqsave(&iwdev->ah_nosleep_tbl_lock, flags);
-			if (!refcount_dec_and_test(&ah->parent_ah->refcnt)) {
+			ah->parent_ah->refcnt--;
+			if (ah->parent_ah->refcnt) {
 				spin_unlock_irqrestore(&iwdev->ah_nosleep_tbl_lock, flags);
 				return false;
 			}
@@ -1283,29 +1299,24 @@ exit:
 	if (udata) {
 		uresp.ah_id = ah->sc_ah.ah_info.ah_idx;
 		err = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp), udata->outlen));
-		if (err) {
-			if (!ah->parent_ah ||
-			    (ah->parent_ah && refcount_dec_and_test(&ah->parent_ah->refcnt))) {
-				irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah,
-						IRDMA_OP_AH_DESTROY, false, NULL, ah);
-				ah_id = ah->sc_ah.ah_info.ah_idx;
-				goto err_ah_create;
-			}
-			goto err_unlock;
-		}
+		if (err)
+			goto err_ah_create;
 	}
 	mutex_unlock(&iwdev->ah_tbl_lock);
 
 	return &ah->ibah;
 
 err_ah_create:
-	if (ah->parent_ah) {
-		hash_del(&ah->parent_ah->list);
-		kfree(ah->parent_ah);
-		iwdev->ah_list_cnt--;
+	ah->parent_ah->refcnt--;
+	if (!ah->parent_ah->refcnt) {
+		/* Last ref dropped, add to deferred delete list. */
+		list_add_tail(&ah->parent_ah->node, &iwdev->ah_deletion_list);
+		iwdev->ah_deletion_list_cnt++;
+		iwdev->ah_deletion_list_cnt_total++;
+		if (iwdev->ah_deletion_list_cnt > iwdev->ah_deletion_list_cnt_peak)
+			iwdev->ah_deletion_list_cnt_peak = iwdev->ah_deletion_list_cnt;
+		ah->parent_ah->deletion_timestamp = ktime_get_raw_ns();
 	}
-err_unlock:
-	mutex_unlock(&iwdev->ah_tbl_lock);
 err_gid_l2:
 	kfree(ah);
 	if (ah_id)
@@ -1443,7 +1454,7 @@ exit:
 		err = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp), udata->outlen));
 		if (err) {
 			if (!ah->parent_ah ||
-			    (ah->parent_ah && refcount_dec_and_test(&ah->parent_ah->refcnt))) {
+			    (ah->parent_ah && !(--ah->parent_ah->refcnt))) {
 				irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah,
 						IRDMA_OP_AH_DESTROY, false, NULL, ah);
 				ah_id = ah->sc_ah.ah_info.ah_idx;
@@ -1456,10 +1467,15 @@ exit:
 	return &ah->ibah;
 
 err_ah_create:
-	if (ah->parent_ah) {
-		hash_del(&ah->parent_ah->list);
-		kfree(ah->parent_ah);
-		iwdev->ah_list_cnt--;
+	ah->parent_ah->refcnt--;
+	if (!ah->parent_ah->refcnt) {
+		/* Last ref dropped, add to deferred delete list. */
+		list_add_tail(&ah->parent_ah->node, &iwdev->ah_nosleep_deletion_list);
+		iwdev->ah_nosleep_deletion_list_cnt++;
+		iwdev->ah_nosleep_deletion_list_cnt_total++;
+		if (iwdev->ah_nosleep_deletion_list_cnt > iwdev->ah_nosleep_deletion_list_cnt_peak)
+			iwdev->ah_nosleep_deletion_list_cnt_peak = iwdev->ah_nosleep_deletion_list_cnt;
+		ah->parent_ah->deletion_timestamp = ktime_get_raw_ns();
 	}
 err_unlock:
 	spin_unlock_irqrestore(&iwdev->ah_nosleep_tbl_lock, flags);
@@ -1619,7 +1635,7 @@ exit:
 		err = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp), udata->outlen));
 		if (err) {
 			if (!ah->parent_ah ||
-			    (ah->parent_ah && refcount_dec_and_test(&ah->parent_ah->refcnt))) {
+			    (ah->parent_ah && !(--ah->parent_ah->refcnt))) {
 				irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah,
 						IRDMA_OP_AH_DESTROY, false, NULL, ah);
 				ah_id = ah->sc_ah.ah_info.ah_idx;
@@ -1741,7 +1757,7 @@ exit:
 		err = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp), udata->outlen));
 		if (err) {
 			if (!ah->parent_ah ||
-			    (ah->parent_ah && refcount_dec_and_test(&ah->parent_ah->refcnt))) {
+			    (ah->parent_ah && !(--ah->parent_ah->refcnt))) {
 				irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah,
 						IRDMA_OP_AH_DESTROY, false, NULL, ah);
 				ah_id = ah->sc_ah.ah_info.ah_idx;
@@ -1874,7 +1890,7 @@ exit:
 		err = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp), udata->outlen));
 		if (err) {
 			if (!ah->parent_ah ||
-			    (ah->parent_ah && refcount_dec_and_test(&ah->parent_ah->refcnt))) {
+			    (ah->parent_ah && !(--ah->parent_ah->refcnt))) {
 				irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah,
 						IRDMA_OP_AH_DESTROY, false, NULL, ah);
 				ah_id = ah->sc_ah.ah_info.ah_idx;
@@ -2006,7 +2022,7 @@ exit:
 		err = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp), udata->outlen));
 		if (err) {
 			if (!ah->parent_ah ||
-			    (ah->parent_ah && refcount_dec_and_test(&ah->parent_ah->refcnt))) {
+			    (ah->parent_ah && !(--ah->parent_ah->refcnt))) {
 				irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah,
 						IRDMA_OP_AH_DESTROY, false, NULL, ah);
 				ah_id = ah->sc_ah.ah_info.ah_idx;
@@ -3236,6 +3252,42 @@ void irdma_copy_user_pgaddrs(struct irdma_mr *iwmr, u64 *pbl,
 }
 #endif
 
+static void irdma_destroy_sleepable_ah_delete(struct irdma_device *iwdev,
+					      struct irdma_ah *ah)
+{
+	mutex_lock(&iwdev->ah_tbl_lock);
+	ah->parent_ah->refcnt--;
+	if (!ah->parent_ah->refcnt) {
+		/* Last ref dropped, add to deferred delete list. */
+		list_add_tail(&ah->parent_ah->node, &iwdev->ah_deletion_list);
+		iwdev->ah_deletion_list_cnt++;
+		iwdev->ah_deletion_list_cnt_total++;
+		if (iwdev->ah_deletion_list_cnt > iwdev->ah_deletion_list_cnt_peak)
+			iwdev->ah_deletion_list_cnt_peak = iwdev->ah_deletion_list_cnt;
+		ah->parent_ah->deletion_timestamp = ktime_get_raw_ns();
+	}
+	mutex_unlock(&iwdev->ah_tbl_lock);
+}
+
+static void irdma_destroy_nosleep_ah_delete(struct irdma_device *iwdev,
+					   struct irdma_ah *ah)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&iwdev->ah_nosleep_tbl_lock, flags);
+	ah->parent_ah->refcnt--;
+	if (!ah->parent_ah->refcnt) {
+		/* Last ref dropped, add to deferred delete list. */
+		list_add_tail(&ah->parent_ah->node, &iwdev->ah_nosleep_deletion_list);
+		iwdev->ah_nosleep_deletion_list_cnt++;
+		iwdev->ah_nosleep_deletion_list_cnt_total++;
+		if (iwdev->ah_nosleep_deletion_list_cnt > iwdev->ah_nosleep_deletion_list_cnt_peak)
+			iwdev->ah_nosleep_deletion_list_cnt_peak = iwdev->ah_nosleep_deletion_list_cnt;
+		ah->parent_ah->deletion_timestamp = ktime_get_raw_ns();
+	}
+	spin_unlock_irqrestore(&iwdev->ah_nosleep_tbl_lock, flags);
+}
+
 /**
  * irdma_destroy_ah - Destroy address handle
  * @ibah: pointer to address handle
@@ -3247,14 +3299,13 @@ int irdma_destroy_ah(struct ib_ah *ibah, u32 ah_flags)
 	struct irdma_device *iwdev = to_iwdev(ibah->device);
 	struct irdma_ah *ah = to_iwah(ibah);
 
-	if (!irdma_ah_hash_delete(iwdev, ah))
-		return 0;
+	if (!ah->parent_ah)
+		BUG();
 
-	irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah, IRDMA_OP_AH_DESTROY,
-			false, NULL, ah);
-
-	irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_ahs,
-			ah->sc_ah.ah_info.ah_idx);
+	if (ah->sleep)
+		irdma_destroy_sleepable_ah_delete(iwdev, ah);
+	else
+		irdma_destroy_nosleep_ah_delete(iwdev, ah);
 
 	return 0;
 }
