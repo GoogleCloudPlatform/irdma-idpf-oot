@@ -860,8 +860,8 @@ static int idpf_cfg_netdev(struct idpf_vport *vport)
 	else
 		netdev->netdev_ops = &idpf_netdev_ops_singleq;
 
-	/* setup watchdog timeout value to be 5 second */
-	netdev->watchdog_timeo = 5 * HZ;
+	/* setup watchdog timeout value to be 10 second */
+	netdev->watchdog_timeo = 10 * HZ;
 
 	/* Update dev_port field to provide an unique id which is
 	 * understood by both CP config file and user scripts
