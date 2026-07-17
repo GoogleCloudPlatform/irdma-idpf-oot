@@ -13,6 +13,7 @@ Depends: dkms,
          gawk, 
          bash, 
          linux-headers-generic | linux-headers-686-pae | linux-headers-amd64 | linux-headers,
+         unifdef
          ${misc:Depends}
 Provides: idpf-dkms
 Description: DKMS build of Infrastructure Data Path Function Linux Driver

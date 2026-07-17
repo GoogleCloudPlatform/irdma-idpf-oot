@@ -17,7 +17,7 @@ BuildRoot: %{_tmppath}/%{name}-%{version}-root
 %define _pcitable /usr/share/kudzu/pcitable /usr/share/hwdata/pcitable /dev/null
 %define pciids    %find %{_pciids}
 %define pcitable  %find %{_pcitable}
-Requires: kernel, findutils, gawk, bash, dkms
+Requires: kernel, findutils, gawk, bash, dkms, unifdef
 
 %global __strip /bin/true
 
