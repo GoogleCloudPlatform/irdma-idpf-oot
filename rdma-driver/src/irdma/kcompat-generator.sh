@@ -48,6 +48,7 @@ function gen-aux() {
 	mh='include/linux/mod_devicetable.h'
 	if grep -qE CONFIG_AUXILIARY_BUS.+1 "$CONFFILE"; then
 		gen HAVE_AUXILIARY_DRIVER_INT_REMOVE if method remove of auxiliary_driver matches 'int' in "$ah"
+		gen HAVE_AUXILIARY_GET_SET_DRV_DATA if fun auxiliary_get_drvdata in "$ah"
 	fi
 
 	# generate HAVE_AUXILIARY_DEVICE_ID only for cases when it's disabled in .config
