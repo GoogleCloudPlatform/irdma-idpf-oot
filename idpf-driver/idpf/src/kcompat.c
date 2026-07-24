@@ -2699,3 +2699,29 @@ void pci_disable_ptm(struct pci_dev *dev)
 #endif /* HAVE_STRUCT_PCI_DEV_PTM_ENABLED && CONFIG_PCIE_PTM */
 }
 #endif /* NEED_PCI_DISABLE_PTM */
+
+
+/*****************************************************************************/
+
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0))
+#include <linux/cpumask.h>
+#include <linux/topology.h>
+#include <linux/crash_dump.h>
+
+int _kc_netif_get_num_default_rss_queues(void) {
+	cpumask_var_t cpus;
+	int cpu, count = 0;
+
+	if (unlikely(is_kdump_kernel() || !zalloc_cpumask_var(&cpus, GFP_KERNEL)))
+		return 1;
+
+	cpumask_copy(cpus, cpu_online_mask);
+	for_each_cpu(cpu, cpus) {
+		++count;
+		cpumask_andnot(cpus, cpus, topology_sibling_cpumask(cpu));
+	}
+	free_cpumask_var(cpus);
+
+	return count > 2 ? DIV_ROUND_UP(count, 2) : count;
+}
+#endif

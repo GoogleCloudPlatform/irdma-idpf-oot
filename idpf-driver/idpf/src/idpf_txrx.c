@@ -1475,17 +1475,13 @@ void idpf_vport_calc_total_qs(struct idpf_adapter *adapter, u16 vport_idx,
 		}
 #endif /* HAVE_XDP_SUPPORT */
 	} else {
-		int num_dflt_rx = IDPF_DFLT_NUM_Q;
-		int num_dflt_tx = IDPF_DFLT_NUM_Q;
-		int num_cpus = num_online_cpus();
+		// Use netif_get_num_default_rss_queues (for kernel versions before
+		// 5.18, use the back-ported definition from 5.18 which provides the
+		// correct number rather than a hard-coded limit)
+		int num_cpus = kc_netif_get_num_default_rss_queues();
 
-		if (max_q->max_txq < IDPF_DFLT_NUM_Q)
-			num_dflt_tx = max_q->max_txq;
-		if (max_q->max_rxq < IDPF_DFLT_NUM_Q)
-			num_dflt_rx = max_q->max_rxq;
-
-		num_txq = min_t(int, num_dflt_tx, num_cpus);
-		num_rxq = min_t(int, num_dflt_rx, num_cpus);
+		num_txq = min_t(int, max_q->max_txq, num_cpus);
+		num_rxq = min_t(int, max_q->max_rxq, num_cpus);
 	}
 
 	if (idpf_is_queue_model_split(le16_to_cpu(vport_msg->txq_model)))
