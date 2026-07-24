@@ -2883,6 +2883,8 @@ void irdma_del_apbvt(struct irdma_device *iwdev,
 void irdma_arp_cqp_op(struct irdma_pci_f *rf, u16 arp_index,
 		      const unsigned char *mac_addr, u32 action)
 {
+	/* Skip generating ARP CQP ops. */
+#if 0
 	struct irdma_add_arp_cache_entry_info *info;
 	struct irdma_cqp_request *cqp_request;
 	struct cqp_cmds_info *cqp_info;
@@ -2915,6 +2917,7 @@ void irdma_arp_cqp_op(struct irdma_pci_f *rf, u16 arp_index,
 	cqp_info->post_sq = 1;
 	irdma_handle_cqp_op(rf, cqp_request);
 	irdma_put_cqp_request(&rf->cqp, cqp_request);
+#endif
 }
 
 /**
