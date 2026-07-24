@@ -6846,6 +6846,18 @@ _kc_napi_busy_loop(unsigned int napi_id,
 #endif /* >=5.12.0 */
 
 /*****************************************************************************/
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0))
+
+
+#define kc_netif_get_num_default_rss_queues _kc_netif_get_num_default_rss_queues
+int _kc_netif_get_num_default_rss_queues(void);
+#else
+
+#include <linux/netdevice.h>
+#define kc_netif_get_num_default_rss_queues netif_get_num_default_rss_queues
+#endif
+
+/*****************************************************************************/
 /*
  * Load the implementations file which actually defines kcompat backports.
  * Legacy backports still exist in this file, but all new backports must be
