@@ -82,7 +82,7 @@
 #endif
 #endif
 
-#if defined(RHEL_9_6) || defined(RHEL_10_0)
+#if defined(RHEL_9_6) || defined(RHEL_9_8) || defined(RHEL_10_0) || defined(RHEL_10_2)
 #define GLOBAL_QP_MEM
 #define IN_IFADDR
 #define IP_ROUTE_OUTPUT_VER_2

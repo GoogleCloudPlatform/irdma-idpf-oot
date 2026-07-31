@@ -13,12 +13,20 @@
 
 #if defined(RHEL_RELEASE_CODE)
 
-#if (RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(10, 0))
-#define RHEL_10_0 /* assume releases 10.x greater than 10.0 also work with 10.0 defines */
+#if (RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(10, 2))
+#define RHEL_10_2 /* assume releases 10.x greater than 10.2 also work with 10.2 defines */
 #endif
 
-#if (RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(9, 6)) && (RHEL_RELEASE_CODE < RHEL_RELEASE_VERSION(10, 0))
-#define RHEL_9_6 /* assume releases 9.x greater than 9.6 also work with 9.6 defines */
+#if (RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(10, 0)) && (RHEL_RELEASE_CODE < RHEL_RELEASE_VERSION(10, 2))
+#define RHEL_10_0 /* 10.0 and 10.1 work with 10.0 defines */
+#endif
+
+#if (RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(9, 8)) && (RHEL_RELEASE_CODE < RHEL_RELEASE_VERSION(10, 0))
+#define RHEL_9_8 /* assume releases 9.x greater than 9.8 also work with 9.8 defines */
+#endif
+
+#if (RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(9, 6)) && (RHEL_RELEASE_CODE < RHEL_RELEASE_VERSION(9, 8))
+#define RHEL_9_6 /* 9.6 and 9.7 work with 9.6 defines */
 #endif
 
 #if (RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(9, 2)) && (RHEL_RELEASE_CODE < RHEL_RELEASE_VERSION(9, 6))
