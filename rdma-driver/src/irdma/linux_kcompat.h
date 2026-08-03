@@ -442,6 +442,8 @@ void irdma_dealloc_pd(struct ib_pd *ibpd);
 /* IRDMA_AUX_GET_SET_DRV_DATA */
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)) && \
 (LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0))
+#ifndef HAVE_AUXILIARY_GET_SET_DRV_DATA
 #define IRDMA_AUX_GET_SET_DRV_DATA
+#endif
 #endif
 #endif /* LINUX_KCOMPAT_H */

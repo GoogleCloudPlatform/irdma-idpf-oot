@@ -5482,6 +5482,9 @@ int irdma_sc_get_next_aeqe(struct irdma_sc_aeq *aeq,
 	/* Ensure AEQE contents are read after valid bit is checked */
 	dma_rmb();
 
+	info->raw_aeqe[0] = le64_to_cpu(aeqe[0]);
+	info->raw_aeqe[1] = le64_to_cpu(aeqe[1]);
+
 	get_64bit_val(aeqe, 0, &compl_ctx);
 
 	print_hex_dump_debug("WQE: AEQ_ENTRY WQE", DUMP_PREFIX_OFFSET, 16, 8,
@@ -7353,8 +7356,13 @@ int irdma_process_cqp_cmd(struct irdma_sc_dev *dev,
 	spin_lock_irqsave(&dev->cqp_lock, flags);
 	if (list_empty(&dev->cqp_cmd_head) && !irdma_cqp_ring_full(dev->cqp))
 		status = irdma_exec_cqp_cmd(dev, pcmdinfo);
-	else
+	else {
+		dev->cqp_cmds_backlogged++;
+		dev->cqp_backlog_curr++;
+		if (dev->cqp_backlog_curr > dev->cqp_backlog_peak)
+			dev->cqp_backlog_peak = dev->cqp_backlog_curr;
 		list_add_tail(&pcmdinfo->cqp_cmd_entry, &dev->cqp_cmd_head);
+	}
 	pcmdinfo->cqp_cmd_exec_status = status;
 	spin_unlock_irqrestore(&dev->cqp_lock, flags);
 	return status;

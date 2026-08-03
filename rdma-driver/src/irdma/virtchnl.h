@@ -34,6 +34,7 @@
 #define IRDMA_VCHNL_OP_DEL_HMC_OBJ_RANGE_V0 0
 #define IRDMA_VCHNL_OP_MANAGE_WS_NODE_V0 0
 #define IRDMA_VCHNL_OP_VLAN_PARSING_V0 0
+#define IRDMA_VCHNL_OP_PUSH_TEL_EVENTS_V0 0
 
 #define IRDMA_VCHNL_INVALID_VF_IDX 0xFFFF
 
@@ -86,6 +87,7 @@ enum irdma_vchnl_ops {
 	IRDMA_VCHNL_OP_ADD_VPORT = 16,
 	IRDMA_VCHNL_OP_DEL_VPORT = 17,
 	IRDMA_VCHNL_OP_GET_MULTI_QS = 18,
+	IRDMA_VCHNL_OP_PUSH_TEL_EVENTS = 19,
 };
 
 #pragma pack(push, 1)
@@ -219,6 +221,7 @@ struct irdma_vchnl_req_init_info {
 
 #pragma pack(pop)
 
+struct irdma_tel_event;
 struct irdma_qos;
 
 int irdma_sc_vchnl_init(struct irdma_sc_dev *dev,
@@ -253,6 +256,8 @@ int irdma_vchnl_req_add_vport(struct irdma_sc_dev *dev, u16 vport_id,
 			      u32 qp1_id, struct irdma_qos *qos);
 int irdma_vchnl_req_del_vport(struct irdma_sc_dev *dev, u16 vport_id,
 			      u32 qp1_id);
+int irdma_vchnl_push_tel_events(struct irdma_sc_dev *dev,
+                  struct irdma_tel_event *event);
 int irdma_vchnl_send_pf(struct irdma_sc_dev *dev, u16 vf_id, u8 *msg, u16 len);
 int irdma_vchnl_recv_pf(struct irdma_sc_dev *dev, u16 vf_id, u8 *msg, u16 len);
 struct irdma_vchnl_dev *irdma_find_vc_dev(struct irdma_sc_dev *dev, u16 vf_id);

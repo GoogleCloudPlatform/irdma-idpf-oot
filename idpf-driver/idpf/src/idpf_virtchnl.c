@@ -1006,8 +1006,8 @@ int idpf_vport_alloc_max_qs(struct idpf_adapter *adapter,
 	max_complq = le16_to_cpu(caps->max_tx_complq) / default_vports;
 
 	if (adapter->num_alloc_vports < default_vports) {
-		max_q->max_rxq = min_t(u16, max_rx_q, IDPF_MAX_RXQ);
-		max_q->max_txq = min_t(u16, max_tx_q, IDPF_MAX_TXQ);
+		max_q->max_rxq = max_rx_q;
+		max_q->max_txq = max_tx_q;
 	} else {
 		max_q->max_rxq = IDPF_MIN_Q;
 		max_q->max_txq = IDPF_MIN_Q;
@@ -1478,7 +1478,7 @@ int idpf_send_destroy_vport_msg(struct idpf_vport *vport)
 	xn_params.vc_op = VIRTCHNL2_OP_DESTROY_VPORT;
 	xn_params.send_buf.iov_base = &v_id;
 	xn_params.send_buf.iov_len = sizeof(v_id);
-	xn_params.timeout_ms = IDPF_VC_XN_MIN_TIMEOUT_MSEC;
+	xn_params.timeout_ms = IDPF_VC_XN_DEFAULT_TIMEOUT_MSEC;
 	reply_sz = idpf_vc_xn_exec(vport->adapter, &xn_params);
 
 	return reply_sz < 0 ? reply_sz : 0;
@@ -1526,7 +1526,7 @@ int idpf_send_disable_vport_msg(struct idpf_vport *vport)
 	xn_params.vc_op = VIRTCHNL2_OP_DISABLE_VPORT;
 	xn_params.send_buf.iov_base = &v_id;
 	xn_params.send_buf.iov_len = sizeof(v_id);
-	xn_params.timeout_ms = IDPF_VC_XN_MIN_TIMEOUT_MSEC;
+	xn_params.timeout_ms = IDPF_VC_XN_DEFAULT_TIMEOUT_MSEC;
 	reply_sz = idpf_vc_xn_exec(vport->adapter, &xn_params);
 
 	return reply_sz < 0 ? reply_sz : 0;
@@ -1893,17 +1893,17 @@ static int idpf_send_ena_dis_queues_msg(struct idpf_vport *vport,
 					struct virtchnl2_queue_reg_chunks *chunks,
 					bool ena)
 {
-	struct idpf_vc_xn_params xn_params = { };
+	struct idpf_vc_xn_params xn_params = {
+		.timeout_ms = IDPF_VC_XN_DEFAULT_TIMEOUT_MSEC,
+	};
 	struct virtchnl2_del_ena_dis_queues *eq;
 	u32 num_chunks, buf_sz;
 	ssize_t reply_sz;
 
 	if (ena) {
 		xn_params.vc_op = VIRTCHNL2_OP_ENABLE_QUEUES;
-		xn_params.timeout_ms = IDPF_VC_XN_DEFAULT_TIMEOUT_MSEC;
 	} else {
 		xn_params.vc_op = VIRTCHNL2_OP_DISABLE_QUEUES;
-	xn_params.timeout_ms = IDPF_VC_XN_MIN_TIMEOUT_MSEC;
 	}
 
 	num_chunks = le16_to_cpu(chunks->num_chunks);
@@ -1942,7 +1942,9 @@ int idpf_send_map_unmap_queue_vector_msg(struct idpf_vport *vport,
 {
 	struct virtchnl2_queue_vector *vqv, *vqv_start;
 	struct virtchnl2_queue_vector_maps *vqvm;
-	struct idpf_vc_xn_params xn_params = { };
+	struct idpf_vc_xn_params xn_params = {
+		.timeout_ms = IDPF_VC_XN_DEFAULT_TIMEOUT_MSEC,
+	};
 	struct idpf_q_grp *q_grp = &vgrp->q_grp;
 	u32 config_sz, chunk_sz, buf_sz;
 	u32 num_msgs, num_chunks, num_q;
@@ -2015,10 +2017,8 @@ int idpf_send_map_unmap_queue_vector_msg(struct idpf_vport *vport,
 
 	if (map) {
 		xn_params.vc_op = VIRTCHNL2_OP_MAP_QUEUE_VECTOR;
-		xn_params.timeout_ms = IDPF_VC_XN_DEFAULT_TIMEOUT_MSEC;
 	} else {
 		xn_params.vc_op = VIRTCHNL2_OP_UNMAP_QUEUE_VECTOR;
-		xn_params.timeout_ms = IDPF_VC_XN_MIN_TIMEOUT_MSEC;
 	}
 
 	for (i = 0; i < num_msgs; i++) {
@@ -2131,7 +2131,7 @@ int idpf_send_delete_queues_msg(struct idpf_vport *vport)
 					 num_chunks);
 
 	xn_params.vc_op = VIRTCHNL2_OP_DEL_QUEUES;
-	xn_params.timeout_ms = IDPF_VC_XN_MIN_TIMEOUT_MSEC;
+	xn_params.timeout_ms = IDPF_VC_XN_DEFAULT_TIMEOUT_MSEC;
 	xn_params.send_buf.iov_base = eq;
 	xn_params.send_buf.iov_len = buf_size;
 	reply_sz = idpf_vc_xn_exec(vport->adapter, &xn_params);
@@ -2321,7 +2321,7 @@ int idpf_send_dealloc_vectors_msg(struct idpf_adapter *adapter)
 	xn_params.vc_op = VIRTCHNL2_OP_DEALLOC_VECTORS;
 	xn_params.send_buf.iov_base = vcs;
 	xn_params.send_buf.iov_len = buf_size;
-	xn_params.timeout_ms = IDPF_VC_XN_MIN_TIMEOUT_MSEC;
+	xn_params.timeout_ms = IDPF_VC_XN_DEFAULT_TIMEOUT_MSEC;
 	reply_sz = idpf_vc_xn_exec(adapter, &xn_params);
 	if (reply_sz < 0)
 		return reply_sz;
@@ -4059,26 +4059,24 @@ static int idpf_send_ena_dis_vlan_offload(struct idpf_adapter *adapter,
 					  bool strip, bool ena)
 {
 	struct virtchnl2_vlan_setting vlano = {};
-	struct idpf_vc_xn_params xn_params = {};
+	struct idpf_vc_xn_params xn_params = {
+		.timeout_ms = IDPF_VC_XN_DEFAULT_TIMEOUT_MSEC,
+	};
 	ssize_t reply_sz;
-	int timeout_ms;
 	u32 vc_op;
 
 	if (ena) {
 		vc_op = strip ? VIRTCHNL2_OP_ENABLE_VLAN_STRIPPING :
 				VIRTCHNL2_OP_ENABLE_VLAN_INSERTION;
-		timeout_ms = IDPF_VC_XN_DEFAULT_TIMEOUT_MSEC;
 	} else {
 		vc_op = strip ? VIRTCHNL2_OP_DISABLE_VLAN_STRIPPING :
 				VIRTCHNL2_OP_DISABLE_VLAN_INSERTION;
-		timeout_ms = IDPF_VC_XN_MIN_TIMEOUT_MSEC;
 	}
 
 	vlano.vport_id = cpu_to_le32(vport_id);
 	vlano.outer_ethertype = cpu_to_le32(ethertype);
 
 	xn_params.vc_op = vc_op;
-	xn_params.timeout_ms = timeout_ms;
 	xn_params.send_buf.iov_base = &vlano;
 	xn_params.send_buf.iov_len = sizeof(vlano);
 

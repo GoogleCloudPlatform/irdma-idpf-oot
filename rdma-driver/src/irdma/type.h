@@ -773,6 +773,12 @@ struct irdma_sc_dev {
 	u64 hw_stats_vf_regs[IRDMA_HW_STAT_INDEX_MAX_GEN_1];
 	u64 feature_info[IRDMA_MAX_FEATURES];
 	u64 cqp_cmd_stats[IRDMA_MAX_CQP_OPS];
+	u64 cqp_cmd_peak_latency[IRDMA_MAX_CQP_OPS];
+	u64 cqp_cmds_latency_2s;
+	u64 cqp_cmds_backlogged;  /* ONLY commands which were added to the overflow list. */
+	u64 cqp_backlog_curr;
+	u64 cqp_backlog_peak;
+	u64 missed_cq_arm;
 	struct irdma_hw_attrs hw_attrs;
 	struct irdma_hmc_info *hmc_info;
 	struct irdma_vchnl_if *vchnl_if;
@@ -805,6 +811,8 @@ struct irdma_sc_dev {
 	u8 protocol_used;
 	void **cq_table;
 	u64 hw_wa;	// Will have bit values for hw work arounds
+	u64 last_cqp_poll_ts;
+	u64 peak_cqp_poll_interval;
 	u32 wa_mem_pages;
 	u8 rrf_multiplier;
 	u8 xf_multiplier;
@@ -1250,6 +1258,7 @@ struct irdma_aeqe_info {
 	bool err_rq_idx_valid:1;
 	u8 q2_data_written;
 	u8 ae_src;
+	u64 raw_aeqe[2];
 };
 
 struct irdma_allocate_stag_info {

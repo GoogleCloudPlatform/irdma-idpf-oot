@@ -38,6 +38,9 @@ static u32 cmddone;
 #define IRDMA_DUMP_BUF_SIZE             16384
 #define IRDMA_DUMP_BUF_HALF_FULL        (IRDMA_DUMP_BUF_SIZE / 2)
 
+/* Enable the deferred deletion by default */
+int ah_deferred_delete = 1;
+
 struct hmc_find {
 	dma_addr_t paddr;
 	bool fnd;
@@ -88,6 +91,8 @@ static void dump_help(void)
 	dbg_vsnprintf(" cq <n>                  <n> is a cq number or 'all'\n");
 	dbg_vsnprintf(" cqp-nop\n");
 	dbg_vsnprintf(" cqp-rq\n");
+	dbg_vsnprintf(" reset\n");
+	dbg_vsnprintf(" ah-deferred-deletion <n>   <n> is 0 or 1\n");
 	cmddone = true;
 }
 
@@ -521,7 +526,7 @@ static void dump_qp(struct irdma_pci_f *rf, u32 qp_id, u32 subtype)
 	struct irdma_qp *iwqp = NULL;
 
 	if (subtype != QP_CHIP_RAW) {
-		if ((qp_id >= 2) && (qp_id < rf->max_qp))
+		if (qp_id < rf->max_qp)
 			iwqp = rf->qp_table[qp_id];
 
 		if (!iwqp) {
@@ -588,9 +593,6 @@ static void dump_qp_cmd(struct irdma_pci_f *rf, char *cbuf)
 			rc = kstrtoul(qpstr, 10, (long *)&qp_id);
 			if (rc)
 				return;
-
-			if ((qp_id == 0) || (qp_id == 1))
-				qp_id = -1;
 		}
 
 		if (sscanf(cbuf + offset, "%8s", stype) == 1) {
@@ -759,122 +761,134 @@ static void dump_stats_cmd(struct irdma_device *iwdev)
 			      ieq->stats_bad_qp_id);
 	}
 
+	dbg_vsnprintf("cqp total ops added to backlog   %llu\n",
+		      dev->cqp_cmds_backlogged);
+	dbg_vsnprintf("cqp current overflow size        %llu\n",
+		      dev->cqp_backlog_curr);
+	dbg_vsnprintf("cqp peak overflow size           %llu\n",
+		      dev->cqp_backlog_peak);
 	dbg_vsnprintf("cqp requested ops                %llu\n",
 		      dev->cqp->requested_ops);
-	dbg_vsnprintf("cqp completed ops                %llu\n\n",
+	dbg_vsnprintf("cqp completed ops                %llu\n",
 		      (u64)atomic64_read(&dev->cqp->completed_ops));
+	dbg_vsnprintf("cqp qps with latency > 2s        %llu\n",
+		      dev->cqp_cmds_latency_2s);
+	dbg_vsnprintf("cqp peak poll interval           %llu\n",
+		      dev->peak_cqp_poll_interval);
+	dbg_vsnprintf("cq missed arm                    %llu\n\n",
+		      dev->missed_cq_arm);
 
 	/* sorted by cqp op type */
-	dbg_vsnprintf("cqp OP_CEQ_DESTROY               %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_CEQ_DESTROY]);
-	dbg_vsnprintf("cqp OP_AEQ_DESTROY               %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_AEQ_DESTROY]);
-	dbg_vsnprintf("cqp OP_DELETE_ARP_CACHE_ENTRY    %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_DELETE_ARP_CACHE_ENTRY]);
-	dbg_vsnprintf("cqp OP_MANAGE_APBVT_ENTRY        %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_MANAGE_APBVT_ENTRY]);
-	dbg_vsnprintf("cqp OP_CEQ_CREATE                %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_CEQ_CREATE]);
-	dbg_vsnprintf("cqp OP_AEQ_CREATE                %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_AEQ_CREATE]);
-	dbg_vsnprintf("cqp OP_MANAGE_QHASH_TABLE_ENTRY  %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_MANAGE_QHASH_TABLE_ENTRY]);
-	dbg_vsnprintf("cqp OP_QP_MODIFY                 %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_QP_MODIFY]);
-	dbg_vsnprintf("cqp OP_QP_UPLOAD_CONTEXT         %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_QP_UPLOAD_CONTEXT]);
-	dbg_vsnprintf("cqp OP_CQ_CREATE                 %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_CQ_CREATE]);
-	dbg_vsnprintf("cqp OP_CQ_DESTROY                %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_CQ_DESTROY]);
-	dbg_vsnprintf("cqp OP_QP_CREATE                 %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_QP_CREATE]);
-	dbg_vsnprintf("cqp OP_QP_DESTROY                %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_QP_DESTROY]);
-	dbg_vsnprintf("cqp OP_ALLOC_STAG                %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_ALLOC_STAG]);
-	dbg_vsnprintf("cqp OP_MR_REG_NON_SHARED         %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_MR_REG_NON_SHARED]);
-	dbg_vsnprintf("cqp OP_DEALLOC_STAG              %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_DEALLOC_STAG]);
-	dbg_vsnprintf("cqp OP_MW_ALLOC                  %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_MW_ALLOC]);
-	dbg_vsnprintf("cqp OP_QP_FLUSH_WQES             %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_QP_FLUSH_WQES]);
-	dbg_vsnprintf("cqp OP_ADD_ARP_CACHE_ENTRY       %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_ADD_ARP_CACHE_ENTRY]);
-	dbg_vsnprintf("cqp OP_MANAGE_PUSH_PAGE          %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_MANAGE_PUSH_PAGE]);
-	dbg_vsnprintf("cqp OP_UPDATE_PE_SDS             %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_UPDATE_PE_SDS]);
-	dbg_vsnprintf("cqp OP_MANAGE_HMC_PM_FUNC_TABLE  %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_MANAGE_HMC_PM_FUNC_TABLE]);
-	dbg_vsnprintf("cqp OP_SUSPEND                   %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_SUSPEND]);
-	dbg_vsnprintf("cqp OP_RESUME                    %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_RESUME]);
-	dbg_vsnprintf("cqp OP_MANAGE_PBLE_BP		%lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_MANAGE_PBLE_BP]);
-	dbg_vsnprintf("cqp OP_QUERY_FPM_VAL             %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_QUERY_FPM_VAL]);
-	dbg_vsnprintf("cqp OP_COMMIT_FPM_VAL            %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_COMMIT_FPM_VAL]);
-	dbg_vsnprintf("cqp OP_AH_CREATE                 %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_AH_CREATE]);
-	dbg_vsnprintf("cqp OP_AH_MODIFY                 %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_AH_MODIFY]);
-	dbg_vsnprintf("cqp OP_AH_DESTROY                %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_AH_DESTROY]);
-	dbg_vsnprintf("cqp OP_MC_CREATE                 %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_MC_CREATE]);
-	dbg_vsnprintf("cqp OP_MC_DESTROY                %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_MC_DESTROY]);
-	dbg_vsnprintf("cqp OP_MC_MODIFY                 %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_MC_MODIFY]);
-	dbg_vsnprintf("cqp OP_STATS_ALLOCATE            %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_STATS_ALLOCATE]);
-	dbg_vsnprintf("cqp OP_STATS_FREE                %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_STATS_FREE]);
-	dbg_vsnprintf("cqp OP_STATS_GATHER              %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_STATS_GATHER]);
-	dbg_vsnprintf("cqp OP_WS_ADD_NODE               %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_WS_ADD_NODE]);
-	dbg_vsnprintf("cqp OP_WS_MODIFY_NODE            %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_WS_MODIFY_NODE]);
-	dbg_vsnprintf("cqp OP_WS_DELETE_NODE            %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_WS_DELETE_NODE]);
-	dbg_vsnprintf("cqp OP_WS_FAILOVER_START         %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_WS_FAILOVER_START]);
-	dbg_vsnprintf("cqp OP_WS_FAILOVER_COMPLETE      %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_WS_FAILOVER_COMPLETE]);
-	dbg_vsnprintf("cqp OP_SET_UP_MAP                %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_SET_UP_MAP]);
-	dbg_vsnprintf("cqp OP_GEN_AE                    %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_GEN_AE]);
-	dbg_vsnprintf("cqp OP_QUERY_RDMA_FEATURES       %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_QUERY_RDMA_FEATURES]);
-	dbg_vsnprintf("cqp OP_ALLOC_LOCAL_MAC_ENTRY     %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_ALLOC_LOCAL_MAC_ENTRY]);
-	dbg_vsnprintf("cqp OP_ADD_LOCAL_MAC_ENTRY       %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_ADD_LOCAL_MAC_ENTRY]);
-	dbg_vsnprintf("cqp OP_DELETE_LOCAL_MAC_ENTRY    %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_DELETE_LOCAL_MAC_ENTRY]);
-	dbg_vsnprintf("cqp OP_CQ_MODIFY                 %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_CQ_MODIFY]);
-	dbg_vsnprintf("cqp OP_SRQ_CREATE                %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_SRQ_CREATE]);
-	dbg_vsnprintf("cqp OP_SRQ_MODIFY                %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_SRQ_MODIFY]);
-	dbg_vsnprintf("cqp OP_SRQ_DESTROY               %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_SRQ_DESTROY]);
-	dbg_vsnprintf("cqp OP_RCA_EXEC_FWD_OP           %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_RCA_EXEC_FWD_OP]);
-	dbg_vsnprintf("cqp OP_RET_CQP_CMPL              %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_RET_CQP_CMPL]);
-	dbg_vsnprintf("cqp OP_COPY_DATA                 %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_COPY_DATA]);
-	dbg_vsnprintf("cqp OP_NOP                       %lld\n",
-		      dev->cqp_cmd_stats[IRDMA_OP_NOP]);
+	dbg_vsnprintf("cqp OP_CEQ_DESTROY               %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_CEQ_DESTROY], dev->cqp_cmd_peak_latency[IRDMA_OP_CEQ_DESTROY]);
+	dbg_vsnprintf("cqp OP_AEQ_DESTROY               %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_AEQ_DESTROY], dev->cqp_cmd_peak_latency[IRDMA_OP_AEQ_DESTROY]);
+	dbg_vsnprintf("cqp OP_DELETE_ARP_CACHE_ENTRY    %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_DELETE_ARP_CACHE_ENTRY], dev->cqp_cmd_peak_latency[IRDMA_OP_DELETE_ARP_CACHE_ENTRY]);
+	dbg_vsnprintf("cqp OP_MANAGE_APBVT_ENTRY        %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_MANAGE_APBVT_ENTRY], dev->cqp_cmd_peak_latency[IRDMA_OP_MANAGE_APBVT_ENTRY]);
+	dbg_vsnprintf("cqp OP_CEQ_CREATE                %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_CEQ_CREATE], dev->cqp_cmd_peak_latency[IRDMA_OP_CEQ_CREATE]);
+	dbg_vsnprintf("cqp OP_AEQ_CREATE                %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_AEQ_CREATE], dev->cqp_cmd_peak_latency[IRDMA_OP_AEQ_CREATE]);
+	dbg_vsnprintf("cqp OP_MANAGE_QHASH_TABLE_ENTRY  %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_MANAGE_QHASH_TABLE_ENTRY], dev->cqp_cmd_peak_latency[IRDMA_OP_MANAGE_QHASH_TABLE_ENTRY]);
+	dbg_vsnprintf("cqp OP_QP_MODIFY                 %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_QP_MODIFY], dev->cqp_cmd_peak_latency[IRDMA_OP_QP_MODIFY]);
+	dbg_vsnprintf("cqp OP_QP_UPLOAD_CONTEXT         %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_QP_UPLOAD_CONTEXT], dev->cqp_cmd_peak_latency[IRDMA_OP_QP_UPLOAD_CONTEXT]);
+	dbg_vsnprintf("cqp OP_CQ_CREATE                 %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_CQ_CREATE], dev->cqp_cmd_peak_latency[IRDMA_OP_CQ_CREATE]);
+	dbg_vsnprintf("cqp OP_CQ_DESTROY                %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_CQ_DESTROY], dev->cqp_cmd_peak_latency[IRDMA_OP_CQ_DESTROY]);
+	dbg_vsnprintf("cqp OP_QP_CREATE                 %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_QP_CREATE], dev->cqp_cmd_peak_latency[IRDMA_OP_QP_CREATE]);
+	dbg_vsnprintf("cqp OP_QP_DESTROY                %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_QP_DESTROY], dev->cqp_cmd_peak_latency[IRDMA_OP_QP_DESTROY]);
+	dbg_vsnprintf("cqp OP_ALLOC_STAG                %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_ALLOC_STAG], dev->cqp_cmd_peak_latency[IRDMA_OP_ALLOC_STAG]);
+	dbg_vsnprintf("cqp OP_MR_REG_NON_SHARED         %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_MR_REG_NON_SHARED], dev->cqp_cmd_peak_latency[IRDMA_OP_MR_REG_NON_SHARED]);
+	dbg_vsnprintf("cqp OP_DEALLOC_STAG              %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_DEALLOC_STAG], dev->cqp_cmd_peak_latency[IRDMA_OP_DEALLOC_STAG]);
+	dbg_vsnprintf("cqp OP_MW_ALLOC                  %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_MW_ALLOC], dev->cqp_cmd_peak_latency[IRDMA_OP_MW_ALLOC]);
+	dbg_vsnprintf("cqp OP_QP_FLUSH_WQES             %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_QP_FLUSH_WQES], dev->cqp_cmd_peak_latency[IRDMA_OP_QP_FLUSH_WQES]);
+	dbg_vsnprintf("cqp OP_ADD_ARP_CACHE_ENTRY       %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_ADD_ARP_CACHE_ENTRY], dev->cqp_cmd_peak_latency[IRDMA_OP_ADD_ARP_CACHE_ENTRY]);
+	dbg_vsnprintf("cqp OP_MANAGE_PUSH_PAGE          %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_MANAGE_PUSH_PAGE], dev->cqp_cmd_peak_latency[IRDMA_OP_MANAGE_PUSH_PAGE]);
+	dbg_vsnprintf("cqp OP_UPDATE_PE_SDS             %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_UPDATE_PE_SDS], dev->cqp_cmd_peak_latency[IRDMA_OP_UPDATE_PE_SDS]);
+	dbg_vsnprintf("cqp OP_MANAGE_HMC_PM_FUNC_TABLE  %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_MANAGE_HMC_PM_FUNC_TABLE], dev->cqp_cmd_peak_latency[IRDMA_OP_MANAGE_HMC_PM_FUNC_TABLE]);
+	dbg_vsnprintf("cqp OP_SUSPEND                   %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_SUSPEND], dev->cqp_cmd_peak_latency[IRDMA_OP_SUSPEND]);
+	dbg_vsnprintf("cqp OP_RESUME                    %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_RESUME], dev->cqp_cmd_peak_latency[IRDMA_OP_RESUME]);
+	dbg_vsnprintf("cqp OP_MANAGE_PBLE_BP            %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_MANAGE_PBLE_BP], dev->cqp_cmd_peak_latency[IRDMA_OP_MANAGE_PBLE_BP]);
+	dbg_vsnprintf("cqp OP_QUERY_FPM_VAL             %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_QUERY_FPM_VAL], dev->cqp_cmd_peak_latency[IRDMA_OP_QUERY_FPM_VAL]);
+	dbg_vsnprintf("cqp OP_COMMIT_FPM_VAL            %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_COMMIT_FPM_VAL], dev->cqp_cmd_peak_latency[IRDMA_OP_COMMIT_FPM_VAL]);
+	dbg_vsnprintf("cqp OP_AH_CREATE                 %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_AH_CREATE], dev->cqp_cmd_peak_latency[IRDMA_OP_AH_CREATE]);
+	dbg_vsnprintf("cqp OP_AH_MODIFY                 %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_AH_MODIFY],  dev->cqp_cmd_stats[IRDMA_OP_AH_MODIFY]);
+	dbg_vsnprintf("cqp OP_AH_DESTROY                %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_AH_DESTROY], dev->cqp_cmd_peak_latency[IRDMA_OP_AH_DESTROY]);
+	dbg_vsnprintf("cqp OP_MC_CREATE                 %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_MC_CREATE], dev->cqp_cmd_peak_latency[IRDMA_OP_MC_CREATE]);
+	dbg_vsnprintf("cqp OP_MC_DESTROY                %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_MC_DESTROY], dev->cqp_cmd_peak_latency[IRDMA_OP_MC_DESTROY]);
+	dbg_vsnprintf("cqp OP_MC_MODIFY                 %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_MC_MODIFY], dev->cqp_cmd_peak_latency[IRDMA_OP_MC_MODIFY]);
+	dbg_vsnprintf("cqp OP_STATS_ALLOCATE            %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_STATS_ALLOCATE], dev->cqp_cmd_peak_latency[IRDMA_OP_STATS_ALLOCATE]);
+	dbg_vsnprintf("cqp OP_STATS_FREE                %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_STATS_FREE], dev->cqp_cmd_peak_latency[IRDMA_OP_STATS_FREE]);
+	dbg_vsnprintf("cqp OP_STATS_GATHER              %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_STATS_GATHER], dev->cqp_cmd_peak_latency[IRDMA_OP_STATS_GATHER]);
+	dbg_vsnprintf("cqp OP_WS_ADD_NODE               %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_WS_ADD_NODE], dev->cqp_cmd_peak_latency[IRDMA_OP_WS_ADD_NODE]);
+	dbg_vsnprintf("cqp OP_WS_MODIFY_NODE            %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_WS_MODIFY_NODE], dev->cqp_cmd_peak_latency[IRDMA_OP_WS_MODIFY_NODE]);
+	dbg_vsnprintf("cqp OP_WS_DELETE_NODE            %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_WS_DELETE_NODE], dev->cqp_cmd_peak_latency[IRDMA_OP_WS_DELETE_NODE]);
+	dbg_vsnprintf("cqp OP_WS_FAILOVER_START         %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_WS_FAILOVER_START], dev->cqp_cmd_peak_latency[IRDMA_OP_WS_FAILOVER_START]);
+	dbg_vsnprintf("cqp OP_WS_FAILOVER_COMPLETE      %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_WS_FAILOVER_COMPLETE], dev->cqp_cmd_peak_latency[IRDMA_OP_WS_FAILOVER_COMPLETE]);
+	dbg_vsnprintf("cqp OP_SET_UP_MAP                %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_SET_UP_MAP], dev->cqp_cmd_peak_latency[IRDMA_OP_SET_UP_MAP]);
+	dbg_vsnprintf("cqp OP_GEN_AE                    %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_GEN_AE], dev->cqp_cmd_peak_latency[IRDMA_OP_GEN_AE]);
+	dbg_vsnprintf("cqp OP_QUERY_RDMA_FEATURES       %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_QUERY_RDMA_FEATURES], dev->cqp_cmd_peak_latency[IRDMA_OP_QUERY_RDMA_FEATURES]);
+	dbg_vsnprintf("cqp OP_ALLOC_LOCAL_MAC_ENTRY     %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_ALLOC_LOCAL_MAC_ENTRY], dev->cqp_cmd_peak_latency[IRDMA_OP_ALLOC_LOCAL_MAC_ENTRY]);
+	dbg_vsnprintf("cqp OP_ADD_LOCAL_MAC_ENTRY       %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_ADD_LOCAL_MAC_ENTRY], dev->cqp_cmd_peak_latency[IRDMA_OP_ADD_LOCAL_MAC_ENTRY]);
+	dbg_vsnprintf("cqp OP_DELETE_LOCAL_MAC_ENTRY    %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_DELETE_LOCAL_MAC_ENTRY], dev->cqp_cmd_peak_latency[IRDMA_OP_DELETE_LOCAL_MAC_ENTRY]);
+	dbg_vsnprintf("cqp OP_CQ_MODIFY                 %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_CQ_MODIFY], dev->cqp_cmd_peak_latency[IRDMA_OP_CQ_MODIFY]);
+	dbg_vsnprintf("cqp OP_SRQ_CREATE                %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_SRQ_CREATE], dev->cqp_cmd_peak_latency[IRDMA_OP_SRQ_CREATE]);
+	dbg_vsnprintf("cqp OP_SRQ_MODIFY                %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_SRQ_MODIFY], dev->cqp_cmd_peak_latency[IRDMA_OP_SRQ_MODIFY]);
+	dbg_vsnprintf("cqp OP_SRQ_DESTROY               %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_SRQ_DESTROY], dev->cqp_cmd_peak_latency[IRDMA_OP_SRQ_DESTROY]);
+	dbg_vsnprintf("cqp OP_RCA_EXEC_FWD_OP           %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_RCA_EXEC_FWD_OP], dev->cqp_cmd_peak_latency[IRDMA_OP_RCA_EXEC_FWD_OP]);
+	dbg_vsnprintf("cqp OP_RET_CQP_CMPL              %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_RET_CQP_CMPL], dev->cqp_cmd_peak_latency[IRDMA_OP_RET_CQP_CMPL]);
+	dbg_vsnprintf("cqp OP_COPY_DATA                 %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_COPY_DATA], dev->cqp_cmd_peak_latency[IRDMA_OP_COPY_DATA]);
+	dbg_vsnprintf("cqp OP_NOP                       %lld\t\t peak latency ns: %llu\n",
+		      dev->cqp_cmd_stats[IRDMA_OP_NOP], dev->cqp_cmd_peak_latency[IRDMA_OP_NOP]);
 
 	dbg_vsnprintf("AH Reused Count                  %lld\n",
 		      iwdev->ah_reused);
@@ -888,6 +902,18 @@ static void dump_stats_cmd(struct irdma_device *iwdev)
 		      iwdev->ah_nosleep_list_cnt);
 	dbg_vsnprintf("AH list cnt HWM(nosleep)            %d\n",
 		      iwdev->ah_nosleep_list_hwm);
+	dbg_vsnprintf("AH deletion list cnt curr        %u\n",
+		      iwdev->ah_deletion_list_cnt);
+	dbg_vsnprintf("AH deletion list cnt total       %u\n",
+		      iwdev->ah_deletion_list_cnt_total);
+	dbg_vsnprintf("AH deletion list cnt peak        %u\n",
+		      iwdev->ah_deletion_list_cnt_peak);
+	dbg_vsnprintf("AH deletion list cnt curr(nosleep)  %u\n",
+		      iwdev->ah_nosleep_deletion_list_cnt);
+	dbg_vsnprintf("AH deletion list cnt total(nosleep) %u\n",
+		      iwdev->ah_nosleep_deletion_list_cnt_total);
+	dbg_vsnprintf("AH deletion list cnt peak(nosleep)  %u\n",
+		      iwdev->ah_nosleep_deletion_list_cnt_peak);
 	dbg_vsnprintf("MAD QP Posted Send WRs           %lld\n",
 		      iwdev->mad_qp_posted_send_wrs);
 	dbg_vsnprintf("MAD QP Completed Send WRs        %lld\n",
@@ -1202,6 +1228,9 @@ static ssize_t irdma_dbg_dump_read(struct file *filp,
 	int bytes_not_copied;
 	int len;
 
+	int state;
+	int ret;
+
 	rf = iwdev->rf;
 	if (cmddone) {
 		cmdnew = true;
@@ -1222,7 +1251,23 @@ static ssize_t irdma_dbg_dump_read(struct file *filp,
 			irdma_cqp_nop(&rf->sc_dev);
 		else if (strncasecmp(cmd_buf, "cqp-rq", 6) == 0)
 			irdma_cqp_rca_post_rqes(&rf->sc_dev);
-		else
+		else if (strncasecmp(cmd_buf, "reset", 5) == 0) {
+			if (!rf->reset) {
+				struct iidc_core_dev_info *cdev_info = rf->cdev;
+				pr_err("Reset request is requested\n");
+				rf->reset = true;
+				cdev_info->ops->request_reset(cdev_info, IIDC_CORER);
+			}
+		} else if (strncasecmp(cmd_buf, "ah-deferred-deletion", 20) == 0) {
+			ret = sscanf(&cmd_buf[21], "%d", &state);
+			if (ret == 1 && (state == 0 || state == 1)) {
+				ah_deferred_delete = state;
+				dbg_vsnprintf("ah-deferred-deletion set to %d\n", ah_deferred_delete);
+			} else {
+				dbg_vsnprintf("ah-deferred-deletion: Invalid value\n");
+			}
+			cmddone = true;
+		} else
 			dump_help();
 		cmdnew = false;
 	}

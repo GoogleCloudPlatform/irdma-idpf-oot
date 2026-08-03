@@ -7,6 +7,7 @@
 #include "type.h"
 #include "protos.h"
 #include "virtchnl.h"
+#include "telemetry.h"
 #include "ws.h"
 #include "i40iw_hw.h"
 extern bool irdma_rca_ena;
@@ -872,6 +873,7 @@ static int irdma_vchnl_req_verify_resp(struct irdma_vchnl_req *vchnl_req,
 	case IRDMA_VCHNL_OP_QUEUE_VECTOR_UNMAP:
 	case IRDMA_VCHNL_OP_ADD_VPORT:
 	case IRDMA_VCHNL_OP_DEL_VPORT:
+	case IRDMA_VCHNL_OP_PUSH_TEL_EVENTS:
 		break;
 	default:
 		return -EBADMSG;
@@ -1565,6 +1567,26 @@ int irdma_vchnl_req_get_caps(struct irdma_sc_dev *dev)
 	}
 
 	return 0;
+}
+
+/**
+ * irdma_vchnl_push_tel_events - Push telemetry events to HMA
+ * @dev: rdma device pointer
+ * @event: telemetry event
+*/
+int irdma_vchnl_push_tel_events(struct irdma_sc_dev *dev,
+                           struct irdma_tel_event *event)
+{
+	struct irdma_vchnl_req_init_info info = {};
+
+	info.op_code = IRDMA_VCHNL_OP_PUSH_TEL_EVENTS;
+	info.op_ver = IRDMA_VCHNL_OP_PUSH_TEL_EVENTS_V0;
+	info.req_parm = event; //  TLV telemetry message
+	info.req_parm_len = sizeof(*event) + event->data_len;
+	info.resp_parm = NULL;
+	info.resp_parm_len = 0;
+
+	return irdma_vchnl_req_send_sync(dev, &info);
 }
 
 /**

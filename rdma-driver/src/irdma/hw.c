@@ -158,6 +158,13 @@ static void irdma_set_flush_fields(struct irdma_sc_qp *qp,
 static void irdma_complete_cqp_request(struct irdma_cqp *cqp,
 				       struct irdma_cqp_request *cqp_request)
 {
+	struct irdma_sc_dev* dev = cqp->sc_cqp.dev;
+	const u64 duration = ktime_get_raw_ns() - cqp_request->submission_ts;
+
+	if (duration > 2000000000) dev->cqp_cmds_latency_2s++;
+	if (duration > dev->cqp_cmd_peak_latency[cqp_request->info.cqp_cmd])
+		dev->cqp_cmd_peak_latency[cqp_request->info.cqp_cmd] = duration;
+
 	atomic_set(&cqp_request->request_done, true);
 	if (cqp_request->waiting)
 		wake_up(&cqp_request->waitq);
@@ -223,6 +230,8 @@ bool irdma_process_aeq(struct irdma_pci_f *rf)
 		ret = irdma_sc_get_next_aeqe(sc_aeq, info);
 		if (ret)
 			break;
+
+		irdma_tel_send_aeq_events(rf, info);
 
 		if (info->aeqe_overflow) {
 			ibdev_err(&iwdev->ibdev, "AEQ has overflowed\n");
@@ -1981,7 +1990,7 @@ void irdma_ctrl_deinit_hw(struct irdma_pci_f *rf)
 {
 	enum init_completion_state state = rf->init_state;
 
-	if ((rf->sc_dev.hw_wa & TIMER_NEEDED) && rf->poll_thread) {
+	if (rf->poll_thread) {
 		kthread_stop(rf->poll_thread);
 		rf->poll_thread = NULL;
 	}
@@ -2017,6 +2026,7 @@ void irdma_ctrl_deinit_hw(struct irdma_pci_f *rf)
 		ibdev_warn(&rf->iwdev->ibdev, "bad init_state = %d\n", rf->init_state);
 		break;
 	}
+	irdma_tel_deinit(rf);
 }
 
 /**
@@ -2157,6 +2167,10 @@ int irdma_ctrl_init_hw(struct irdma_pci_f *rf)
 		if (status)
 			break;
 		rf->init_state = INITIAL_STATE;
+
+		status = irdma_tel_init(rf);
+		if (status)
+			break;
 
 		status = irdma_create_cqp(rf);
 		if (status)
@@ -2869,6 +2883,8 @@ void irdma_del_apbvt(struct irdma_device *iwdev,
 void irdma_arp_cqp_op(struct irdma_pci_f *rf, u16 arp_index,
 		      const unsigned char *mac_addr, u32 action)
 {
+	/* Skip generating ARP CQP ops. */
+#if 0
 	struct irdma_add_arp_cache_entry_info *info;
 	struct irdma_cqp_request *cqp_request;
 	struct cqp_cmds_info *cqp_info;
@@ -2901,6 +2917,7 @@ void irdma_arp_cqp_op(struct irdma_pci_f *rf, u16 arp_index,
 	cqp_info->post_sq = 1;
 	irdma_handle_cqp_op(rf, cqp_request);
 	irdma_put_cqp_request(&rf->cqp, cqp_request);
+#endif
 }
 
 /**

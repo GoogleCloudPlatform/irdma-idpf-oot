@@ -53,6 +53,7 @@
 #include "cm.h"
 #include "iidc.h"
 #include "irdma_kcompat.h"
+#include "telemetry.h"
 #include "irdma-abi.h"
 #include "verbs.h"
 #include "user.h"
@@ -198,6 +199,7 @@ struct irdma_cqp_request {
 	bool waiting:1;
 	bool dynamic:1;
 	bool pending:1;
+	u64 submission_ts;
 };
 
 struct irdma_cqp {
@@ -397,6 +399,7 @@ struct irdma_pci_f {
 	u32 chk_stag;
 	atomic_t ceq0_int_good;
 	atomic_t ceq0_wa_enable;
+	struct irdma_telemetry telemetry;
 };
 
 struct irdma_ae_info {
@@ -424,6 +427,8 @@ struct irdma_device {
 	DECLARE_HASHTABLE(ah_nosleep_hash_tbl, 8);
 	struct mutex ah_tbl_lock;
 	spinlock_t ah_nosleep_tbl_lock;
+	struct list_head ah_deletion_list;
+	struct list_head ah_nosleep_deletion_list;
 #ifdef CONFIG_DEBUG_FS
 	u64 ah_reused;
 	u64 ah_nosleep_reused;
@@ -432,6 +437,12 @@ struct irdma_device {
 	u32 ah_list_hwm;
 	u32 ah_nosleep_list_cnt;
 	u32 ah_nosleep_list_hwm;
+	u32 ah_deletion_list_cnt;
+	u32 ah_deletion_list_cnt_total;
+	u32 ah_deletion_list_cnt_peak;
+	u32 ah_nosleep_deletion_list_cnt;
+	u32 ah_nosleep_deletion_list_cnt_total;
+	u32 ah_nosleep_deletion_list_cnt_peak;
 	u32 roce_cwnd;
 	u32 roce_ackcreds;
 	u32 vendor_id;
