@@ -3602,7 +3602,7 @@ static int irdma_post_send(struct ib_qp *ibqp,
 				stag_info.chunk_size = 1;
 				stag_info.first_pm_pbl_index = palloc->level1.idx;
 			}
-			stag_info.local_fence = ib_wr->send_flags & IB_SEND_FENCE;
+			stag_info.local_fence = true;
 			err = irdma_sc_mr_fast_register(&iwqp->sc_qp, &stag_info,
 							true);
 			break;
