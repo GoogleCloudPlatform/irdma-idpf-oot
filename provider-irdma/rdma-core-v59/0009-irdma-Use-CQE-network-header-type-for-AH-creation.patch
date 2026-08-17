@@ -1,0 +1,68 @@
+From d0de256c28d3f7c387380e118951a3958e944be1 Mon Sep 17 00:00:00 2001
+From: Ted Shaowang <shaowang@google.com>
+Date: Fri, 14 Aug 2026 12:00:54 -0400
+Subject: [PATCH] irdma: Use CQE network header type for AH creation
+
+Some irdma hardware zeroes the IPv4 header checksum in received GRHs.
+The libibverbs header heuristic can therefore misclassify valid IPv4
+packets as IPv6 when creating a reply address handle.
+
+Add completion flags for a hardware-reported network header type,
+consume them in ibv_init_ah_from_wc(), and set them from the irdma CQE
+for UD completions. Providers without the hint retain the existing GRH
+parsing fallback.
+
+Signed-off-by: Ted Shaowang <shaowang@google.com>
+---
+ libibverbs/verbs.c       | 5 ++++-
+ libibverbs/verbs.h       | 2 ++
+ providers/irdma/uverbs.c | 4 +++-
+ 3 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/libibverbs/verbs.c b/libibverbs/verbs.c
+index f9f2a03bf..ed5df5ce3 100644
+--- a/libibverbs/verbs.c
++++ b/libibverbs/verbs.c
+@@ -995,7 +995,10 @@ int ibv_init_ah_from_wc(struct ibv_context *context, uint8_t port_num,
+ 
+ 	if (wc->wc_flags & IBV_WC_GRH) {
+ 		ah_attr->is_global = 1;
+-		version = get_grh_header_version(grh);
++		if (wc->wc_flags & IBV_WC_WITH_NETWORK_HDR_TYPE)
++			version = (wc->wc_flags & IBV_WC_NETWORK_HDR_IPV6) ? 6 : 4;
++		else
++			version = get_grh_header_version(grh);
+ 
+ 		if (version == 4)
+ 			ret = set_ah_attr_by_ipv4(context, ah_attr,
+diff --git a/libibverbs/verbs.h b/libibverbs/verbs.h
+index 908c87f53..3a3728cca 100644
+--- a/libibverbs/verbs.h
++++ b/libibverbs/verbs.h
+@@ -586,6 +586,8 @@ enum ibv_wc_flags {
+ 	IBV_WC_TM_SYNC_REQ	= 1 << 4,
+ 	IBV_WC_TM_MATCH		= 1 << 5,
+ 	IBV_WC_TM_DATA_VALID	= 1 << 6,
++	IBV_WC_WITH_NETWORK_HDR_TYPE = 1 << 7,
++	IBV_WC_NETWORK_HDR_IPV6 = 1 << 8,
+ };
+ 
+ struct ibv_wc {
+diff --git a/providers/irdma/uverbs.c b/providers/irdma/uverbs.c
+index 4d894bd43..f8663a461 100644
+--- a/providers/irdma/uverbs.c
++++ b/providers/irdma/uverbs.c
+@@ -1249,7 +1249,9 @@ static void irdma_process_cqe(struct ibv_wc *entry, struct irdma_cq_poll_info *c
+ #define IRDMA_PKT_TYPE_ROCE_V2_IPV6 2
+ 		entry->sl = cur_cqe->ipv4 ? IRDMA_PKT_TYPE_ROCE_V2_IPV4 :
+ 			IRDMA_PKT_TYPE_ROCE_V2_IPV6;
+-		entry->wc_flags |= IBV_WC_GRH;
++		entry->wc_flags |= IBV_WC_GRH | IBV_WC_WITH_NETWORK_HDR_TYPE;
++		if (!cur_cqe->ipv4)
++			entry->wc_flags |= IBV_WC_NETWORK_HDR_IPV6;
+ 	} else {
+ 		entry->src_qp = cur_cqe->qp_id;
+ 	}
+-- 
+2.39.5 (Apple Git-154)
+
