@@ -3414,6 +3414,18 @@ enum dpll_lock_status_error {
 #define dpll_netdev_pin_clear netdev_dpll_pin_clear
 #endif /* NEED_DPLL_NETDEV_PIN_SET */
 
+#ifdef NEED_DPLL_TRACKER
+#ifdef CONFIG_DPLL
+#include <linux/dpll.h>
+#define dpll_device_get(clock_id, device_idx, module, tracker) \
+	dpll_device_get(clock_id, device_idx, module)
+#define dpll_device_put(dpll, tracker) dpll_device_put(dpll)
+#define dpll_pin_get(clock_id, pin_idx, module, prop, tracker) \
+	dpll_pin_get(clock_id, pin_idx, module, prop)
+#define dpll_pin_put(pin, tracker) dpll_pin_put(pin)
+#endif /* CONFIG_DPLL */
+#endif /* NEED_DPLL_TRACKER */
+
 #ifdef NEED_RADIX_TREE_EMPTY
 static inline bool radix_tree_empty(struct radix_tree_root *root)
 {
@@ -3626,12 +3638,36 @@ void _kc_eventfd_signal(struct eventfd_ctx *ctx)
 #define TCP_MIN_MSS 88U
 #endif
 
-#ifdef NEED_DEFINE_SIMPLE_DEV_OPS
-#define DEFINE_SIMPLE_DEV_OPS(name, suspend_fn, resume_fn) \
+#ifdef NEED_DEFINE_SIMPLE_DEV_PM_OPS
+#define DEFINE_SIMPLE_DEV_PM_OPS(name, suspend_fn, resume_fn) \
     SIMPLE_DEV_PM_OPS(name, suspend_fn, resume_fn)
-#endif /* NEED_DEFINE_SIMPLE_DEV_OPS */
+#endif /* NEED_DEFINE_SIMPLE_DEV_PM_OPS */
 
 #ifdef NEED_PM_SLEEP_PTR
 #define pm_sleep_ptr(_ptr) (_ptr)
 #endif /* NEED_PM_SLEEP_PTR */
+
+#ifdef NEED_MODULE_INFO_WITHOUT_CHECK
+/* upstream commit ae83f3b72621 ("module: Add compile-time check for embedded
+ * NUL characters") added an assert preventing embedding dishonest licenses,
+ * like "GPL\0, but proprietary for XXX part". Unfortunately __builtin_strlen()
+ * used does not work in some of our CI builds, so just remove that (essentially
+ * "reverting" the upstream commit).
+ */
+#include <linux/moduleparam.h>
+#undef MODULE_INFO
+#define MODULE_INFO(tag, info)					\
+	static const char __UNIQUE_ID(modinfo)[]		\
+	__used __section(".modinfo") __aligned(1)		\
+	= __MODULE_INFO_PREFIX __stringify(tag) "=" info
+#endif /* NEED_MODULE_INFO_WITHOUT_CHECK */
+
+#ifndef HAVE_RESOURCE_SET_SIZE
+void resource_set_size(struct resource *res, resource_size_t size);
+#endif /* !HAVE_RESOURCE_SET_SIZE */
+#ifndef HAVE_RESOURCE_SET_RANGE
+void resource_set_range(struct resource *res, resource_size_t start,
+			resource_size_t size);
+#endif /* !HAVE_RESOURCE_SET_RANGE */
+
 #endif /* _KCOMPAT_IMPL_H_ */

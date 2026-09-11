@@ -8,13 +8,6 @@
 
 /* LAN driver does not own all the BAR0 address space. This results in 2 BAR0
  * regions for PF device and the driver should map each region separately.
- *
- * Rest of BAR0 is owned by RDMA and it maps the pages on its own as it needs
- * to map some of the pages for write combing (WC) instead of the default
- * non-cached (NC) mapping that LAN driver does. In the PF BAR space,
- * RDMA BAR0 memory lies between 192MB to 256MB.
- *
- * Also driver should map 1 page of RDMA from its space.
  */
 #define IDPF_PF_BAR0_REGION1_END	0xC001000	/* 192MB + 4KB */
 #define IDPF_PF_BAR0_REGION2_START	0x10000000	/* 256MB */
@@ -23,12 +16,13 @@
 
 /**
  * idpf_ctlq_reg_init - initialize default mailbox registers
- * @hw: pointer to the hardware structure
+ * @adapter: adapter structure
  * @cq: pointer to the array of create control queues
  */
-static void idpf_ctlq_reg_init(struct idpf_hw *hw,
+static void idpf_ctlq_reg_init(struct idpf_adapter *adapter,
 			       struct idpf_ctlq_create_info *cq)
 {
+	resource_size_t mbx_start = adapter->dev_ops.static_reg_info[0].start;
 	int i;
 
 	for (i = 0; i < IDPF_NUM_DFLT_MBX_Q; i++) {
@@ -37,22 +31,22 @@ static void idpf_ctlq_reg_init(struct idpf_hw *hw,
 		switch (ccq->type) {
 		case IDPF_CTLQ_TYPE_MAILBOX_TX:
 			/* set head and tail registers in our local struct */
-			ccq->reg.head = PF_FW_ATQH;
-			ccq->reg.tail = PF_FW_ATQT;
-			ccq->reg.len = PF_FW_ATQLEN;
-			ccq->reg.bah = PF_FW_ATQBAH;
-			ccq->reg.bal = PF_FW_ATQBAL;
+			ccq->reg.head = PF_FW_ATQH - mbx_start;
+			ccq->reg.tail = PF_FW_ATQT - mbx_start;
+			ccq->reg.len = PF_FW_ATQLEN - mbx_start;
+			ccq->reg.bah = PF_FW_ATQBAH - mbx_start;
+			ccq->reg.bal = PF_FW_ATQBAL - mbx_start;
 			ccq->reg.len_mask = PF_FW_ATQLEN_ATQLEN_M;
 			ccq->reg.len_ena_mask = PF_FW_ATQLEN_ATQENABLE_M;
 			ccq->reg.head_mask = PF_FW_ATQH_ATQH_M;
 			break;
 		case IDPF_CTLQ_TYPE_MAILBOX_RX:
 			/* set head and tail registers in our local struct */
-			ccq->reg.head = PF_FW_ARQH;
-			ccq->reg.tail = PF_FW_ARQT;
-			ccq->reg.len = PF_FW_ARQLEN;
-			ccq->reg.bah = PF_FW_ARQBAH;
-			ccq->reg.bal = PF_FW_ARQBAL;
+			ccq->reg.head = PF_FW_ARQH - mbx_start;
+			ccq->reg.tail = PF_FW_ARQT - mbx_start;
+			ccq->reg.len = PF_FW_ARQLEN - mbx_start;
+			ccq->reg.bah = PF_FW_ARQBAH - mbx_start;
+			ccq->reg.bal = PF_FW_ARQBAL - mbx_start;
 			ccq->reg.len_mask = PF_FW_ARQLEN_ARQLEN_M;
 			ccq->reg.len_ena_mask = PF_FW_ARQLEN_ARQENABLE_M;
 			ccq->reg.head_mask = PF_FW_ARQH_ARQH_M;
@@ -147,8 +141,16 @@ free_reg_vals:
  */
 static void idpf_reset_reg_init(struct idpf_adapter *adapter)
 {
-	adapter->reset_reg.rstat = idpf_get_reg_addr(adapter, PFGEN_RSTAT);
+	adapter->reset_reg.rstat = idpf_get_rstat_reg_addr(adapter, PFGEN_RSTAT);
 	adapter->reset_reg.rstat_m = PFGEN_RSTAT_PFR_STATE_M;
+}
+
+/**
+ * idpf_oicr_reset_reg_init - Initialize reset registers
+ * @adapter: Driver specific private structure
+ */
+static void idpf_oicr_reset_reg_init(struct idpf_adapter *adapter)
+{
 	adapter->reset_reg.oicr_cause = idpf_get_reg_addr(adapter, PF_INT_DIR_OICR_CAUSE);
 	adapter->reset_reg.oicr_cause_m = PF_INT_DIR_OICR_CAUSE_CAUSE_M;
 }
@@ -163,9 +165,9 @@ static void idpf_trigger_reset(struct idpf_adapter *adapter,
 {
 	u32 reset_reg;
 
-	reset_reg = readl(idpf_get_reg_addr(adapter, PFGEN_CTRL));
+	reset_reg = readl(idpf_get_rstat_reg_addr(adapter, PFGEN_CTRL));
 	writel(reset_reg | PFGEN_CTRL_PFSWR,
-	       idpf_get_reg_addr(adapter, PFGEN_CTRL));
+	       idpf_get_rstat_reg_addr(adapter, PFGEN_CTRL));
 }
 
 /**
@@ -206,22 +208,14 @@ static void idpf_ptp_reg_init(const struct idpf_adapter *adapter)
 }
 
 /**
- * idpf_idc_register - idc register function for idpf
+ * idpf_idc_register - register for IDC callbacks
  * @adapter: Driver specific private structure
+ *
+ * Return: 0 on success or error code on failure.
  */
 static int idpf_idc_register(struct idpf_adapter *adapter)
 {
-	return idpf_idc_init_aux_device(&adapter->rdma_data, IIDC_FUNCTION_TYPE_PF);
-}
-
-/**
- * idpf_idc_ops_init - Initialize IDC function pointers
- * @adapter: Driver specific private structure
- */
-static void idpf_idc_ops_init(struct idpf_adapter *adapter)
-{
-	adapter->dev_ops.idc_ops.idc_init = idpf_idc_register;
-	adapter->dev_ops.idc_ops.idc_deinit = idpf_idc_deinit_aux_device;
+	return idpf_idc_init_aux_core_dev(adapter, IIDC_FUNCTION_TYPE_PF);
 }
 
 /**
@@ -234,6 +228,7 @@ static void idpf_reg_ops_init(struct idpf_adapter *adapter)
 	adapter->dev_ops.reg_ops.intr_reg_init = idpf_intr_reg_init;
 	adapter->dev_ops.reg_ops.mb_intr_reg_init = idpf_mb_intr_reg_init;
 	adapter->dev_ops.reg_ops.reset_reg_init = idpf_reset_reg_init;
+	adapter->dev_ops.reg_ops.oicr_reset_reg_init = idpf_oicr_reset_reg_init;
 	adapter->dev_ops.reg_ops.trigger_reset = idpf_trigger_reset;
 	adapter->dev_ops.reg_ops.read_master_time = idpf_read_master_time_ns;
 	adapter->dev_ops.reg_ops.ptp_reg_init = idpf_ptp_reg_init;
@@ -246,13 +241,16 @@ static void idpf_reg_ops_init(struct idpf_adapter *adapter)
 void idpf_dev_ops_init(struct idpf_adapter *adapter)
 {
 	idpf_reg_ops_init(adapter);
-	idpf_idc_ops_init(adapter);
 #if IS_ENABLED(CONFIG_VFIO_MDEV) && defined(HAVE_PASID_SUPPORT)
 	adapter->dev_ops.vdcm_init = idpf_vdcm_init;
 	adapter->dev_ops.vdcm_deinit = idpf_vdcm_deinit;
 	adapter->dev_ops.notify_adi_reset = idpf_notify_adi_reset;
 #endif /* CONFIG_VFIO_MDEV && HAVE_PASID_SUPPORT */
 
-	adapter->dev_ops.bar0_region1_size = IDPF_PF_BAR0_REGION1_END;
-	adapter->dev_ops.bar0_region2_start = IDPF_PF_BAR0_REGION2_START;
+	adapter->dev_ops.idc_init = idpf_idc_register;
+
+	resource_set_range(&adapter->dev_ops.static_reg_info[0],
+			   PF_FW_BASE, IDPF_PF_MBX_REGION_SZ);
+	resource_set_range(&adapter->dev_ops.static_reg_info[1],
+			   PFGEN_RTRIG, IDPF_PF_RSTAT_REGION_SZ);
 }

@@ -26,6 +26,9 @@
 #include <asm/io.h>
 #include <linux/ethtool.h>
 #include <linux/if_vlan.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+#include <linux/iopoll.h>
+#endif
 #include <net/ipv6.h>
 #include <net/ip6_route.h>
 #include <net/route.h>

@@ -31,6 +31,8 @@ irdma-objs := main.o      \
 	      i40iw_hw.o  \
 	      ig3rdma_hw.o \
 	      icrdma_hw.o \
+	      icrdma_if.o \
+	      ig3rdma_if.o \
 	      configfs.o  \
 	      virtchnl.o  \
 	      irdma_kcompat.o \

@@ -940,60 +940,68 @@ static int irdma_create_ah_vlan_tag(struct irdma_device *iwdev,
 	return 0;
 }
 
+/**
+ * irdma_create_ah_wait - wait for Create AH CQP op completion
+ * @rf: RDMA PCI function
+ * @sc_ah: address handle being created
+ * @sleep: if false, wait for CQP op completion (poll)
+ */
 static int irdma_create_ah_wait(struct irdma_pci_f *rf,
 				struct irdma_sc_ah *sc_ah, bool sleep)
 {
-	int ret;
+	struct irdma_cqp_request *cqp_request;
+	int err;
+
+	cqp_request = sc_ah->ah_info.cqp_request;
 
 	if (!sleep) {
-		bool timeout = false;
-		u64 start = get_jiffies_64();
-		u64 completed_ops = atomic64_read(&rf->sc_dev.cqp->completed_ops);
-		struct irdma_cqp_request *cqp_request =
-			sc_ah->ah_info.cqp_request;
-		const u64 timeout_jiffies =
-			msecs_to_jiffies(rf->sc_dev.hw_attrs.max_cqp_compl_wait_time_ms *
-					 CQP_TIMEOUT_THRESHOLD);
+#ifdef HAVE_POLL_TIMEOUT_US_ATOMIC
+		const u64 tmout_ms = irdma_get_timeout_threshold(&rf->sc_dev) *
+			CQP_COMPL_WAIT_TIME_MS;
 
-		/* NOTE: irdma_check_cqp_progress is not used here because it relies on
-		 *       a notion of a cycle count, but we want to avoid unnecessary delays.
-		 *       We are in an atomic context here, so we might as well check in
-		 *       a tight loop.
-		 */
-		while (!atomic_read(&cqp_request->request_done)) {
-			u64 tmp;
-			u64 curr_jiffies;
-
-			irdma_cqp_ce_handler(rf, &rf->ccq.sc_cq);
-
-			curr_jiffies = get_jiffies_64();
-			tmp = atomic64_read(&rf->sc_dev.cqp->completed_ops);
-			if (tmp != completed_ops) {
-				/* CQP is progressing. Reset timer. */
-				completed_ops = tmp;
-				start = curr_jiffies;
-			}
-
-			if ((curr_jiffies - start) > timeout_jiffies) {
-				timeout = true;
-				break;
-			}
+		if (poll_timeout_us_atomic(irdma_cqp_ce_handler(rf,
+								&rf->ccq.sc_cq),
+					   atomic_read(&sc_ah->ah_info.ah_valid),
+					   1, tmout_ms * USEC_PER_MSEC, false)) {
+			err = -ETIMEDOUT;
+		} else if (cqp_request->compl_info.op_ret_val) {
+			err = -EINVAL;
 		}
 
-		if (!timeout && !cqp_request->compl_info.op_ret_val) {
+		if (err) {
+			ibdev_err(&rf->iwdev->ibdev,
+				  "VERBS: CQP create AH error err = %d opt_ret_val = %d",
+				  err, cqp_request->compl_info.op_ret_val);
 			irdma_put_cqp_request(&rf->cqp, cqp_request);
-			sc_ah->ah_info.ah_valid = true;
-		} else {
-			ret = timeout ? -ETIMEDOUT : -EINVAL;
-			ibdev_err(&rf->iwdev->ibdev, "CQP create AH error ret = %d opt_ret_val = %d",
-				  ret, cqp_request->compl_info.op_ret_val);
+			if (err == -ETIMEDOUT && !rf->reset) {
+				rf->reset = true;
+				rf->irdma_initiated_reset = true;
+				rf->gen_ops.request_reset(rf);
+			}
+			return err;
+		}
+#else /* HAVE_POLL_TIMEOUT_US_ATOMIC */
+		int cnt = rf->sc_dev.hw_attrs.max_cqp_compl_wait_time_ms *
+			  CQP_TIMEOUT_THRESHOLD;
+
+		do {
+			irdma_cqp_ce_handler(rf, &rf->ccq.sc_cq);
+			mdelay(1);
+		} while (!atomic_read(&cqp_request->request_done) && --cnt);
+
+		if (!cnt || cqp_request->compl_info.op_ret_val) {
+			err = !cnt ? -ETIMEDOUT : -EINVAL;
+			ibdev_err(&rf->iwdev->ibdev,
+				  "CQP create AH error err = %d opt_ret_val = %d",
+				  err, cqp_request->compl_info.op_ret_val);
 			irdma_put_cqp_request(&rf->cqp, cqp_request);
-			if (timeout && !rf->reset) {
+			if (!cnt && !rf->reset) {
 				rf->reset = true;
 				rf->gen_ops.request_reset(rf);
 			}
-			return ret;
+			return err;
 		}
+#endif /* HAVE_POLL_TIMEOUT_US_ATOMIC */
 	}
 
 	return 0;
@@ -1008,7 +1016,7 @@ static int irdma_create_ah_wait(struct irdma_pci_f *rf,
  * returns true if AH is found, false if not found.
  */
 static bool irdma_sleepable_ah_exists(struct irdma_device *iwdev,
-			    struct irdma_ah *new_ah)
+				      struct irdma_ah *new_ah)
 {
 	struct irdma_ah *ah;
 	u32 save_ah_id = new_ah->sc_ah.ah_info.ah_idx;
@@ -1024,7 +1032,8 @@ static bool irdma_sleepable_ah_exists(struct irdma_device *iwdev,
 	hash_for_each_possible(iwdev->ah_hash_tbl, ah, list, key) {
 		/* Set ah_valid, ah_id the same so memcmp can work */
 		new_ah->sc_ah.ah_info.ah_idx = ah->sc_ah.ah_info.ah_idx;
-		new_ah->sc_ah.ah_info.ah_valid = ah->sc_ah.ah_info.ah_valid;
+		atomic_set(&new_ah->sc_ah.ah_info.ah_valid,
+			   atomic_read(&ah->sc_ah.ah_info.ah_valid));
 		if (skip_flow_label)
 			new_ah->sc_ah.ah_info.flow_label = ah->sc_ah.ah_info.flow_label;
 		if (!memcmp(&ah->sc_ah.ah_info, &new_ah->sc_ah.ah_info,
@@ -1034,6 +1043,7 @@ static bool irdma_sleepable_ah_exists(struct irdma_device *iwdev,
 			return true;
 		}
 	}
+	atomic_set(&new_ah->sc_ah.ah_info.ah_valid, false);
 	new_ah->sc_ah.ah_info.ah_idx = save_ah_id;
 	if (skip_flow_label)
 		new_ah->sc_ah.ah_info.flow_label = save_flow_label;
@@ -1061,7 +1071,7 @@ static bool irdma_sleepable_ah_exists(struct irdma_device *iwdev,
  * returns true if AH is found, false if not found.
  */
 static bool irdma_nosleep_ah_exists(struct irdma_device *iwdev,
-			    struct irdma_ah *new_ah)
+				    struct irdma_ah *new_ah)
 {
 	struct irdma_ah *ah;
 	u32 save_ah_id = new_ah->sc_ah.ah_info.ah_idx;
@@ -1075,8 +1085,10 @@ static bool irdma_nosleep_ah_exists(struct irdma_device *iwdev,
 		? true : false;
 
 	hash_for_each_possible(iwdev->ah_nosleep_hash_tbl, ah, list, key) {
-		/* Set ah_id the same so memcmp can work */
+		/* Set ah_valid, ah_id the same so memcmp can work */
 		new_ah->sc_ah.ah_info.ah_idx = ah->sc_ah.ah_info.ah_idx;
+		atomic_set(&new_ah->sc_ah.ah_info.ah_valid,
+			   atomic_read(&ah->sc_ah.ah_info.ah_valid));
 		if (skip_flow_label)
 			new_ah->sc_ah.ah_info.flow_label = ah->sc_ah.ah_info.flow_label;
 		if (!memcmp(&ah->sc_ah.ah_info, &new_ah->sc_ah.ah_info,
@@ -1086,6 +1098,7 @@ static bool irdma_nosleep_ah_exists(struct irdma_device *iwdev,
 			return true;
 		}
 	}
+	atomic_set(&new_ah->sc_ah.ah_info.ah_valid, false);
 	new_ah->sc_ah.ah_info.ah_idx = save_ah_id;
 	if (skip_flow_label)
 		new_ah->sc_ah.ah_info.flow_label = save_flow_label;
@@ -1416,8 +1429,13 @@ static struct ib_ah *irdma_create_nosleep_ah(struct ib_pd *ibpd,
 		goto exit;
 	}
 
+#ifdef HAVE_POLL_TIMEOUT_US_ATOMIC
+	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
+			      false, irdma_gsi_ud_qp_ah_cb, sc_ah);
+#else
 	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
 			      false, NULL, sc_ah);
+#endif
 	if (err) {
 		ibdev_dbg(&iwdev->ibdev, "VERBS: CQP-OP Create AH fail");
 		goto err_ah_create;
@@ -1714,8 +1732,13 @@ static int irdma_create_nosleep_ah(struct ib_ah *ib_ah,
 		goto exit;
 	}
 
+#ifdef HAVE_POLL_TIMEOUT_US_ATOMIC
+	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
+			      false, irdma_gsi_ud_qp_ah_cb, sc_ah);
+#else
 	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
 			      false, NULL, sc_ah);
+#endif
 	if (err) {
 		ibdev_dbg(&iwdev->ibdev, "CQP-OP Create AH fail");
 		goto err_ah_create;
@@ -1979,8 +2002,13 @@ static int irdma_create_nosleep_ah(struct ib_ah *ib_ah,
 		goto exit;
 	}
 
+#ifdef HAVE_POLL_TIMEOUT_US_ATOMIC
+	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
+			      false, irdma_gsi_ud_qp_ah_cb, sc_ah);
+#else
 	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
 			      false, NULL, sc_ah);
+#endif
 	if (err) {
 		ibdev_dbg(&iwdev->ibdev, "CQP-OP Create AH fail");
 		goto err_ah_create;
@@ -2260,8 +2288,13 @@ struct ib_ah *irdma_create_ah(struct ib_pd *ibpd, struct ib_ah_attr *attr)
 	if (err)
 		goto error;
 
+#ifdef HAVE_POLL_TIMEOUT_US_ATOMIC
+	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
+			      false, irdma_gsi_ud_qp_ah_cb, sc_ah);
+#else
 	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
 			      false, NULL, sc_ah);
+#endif
 	if (err) {
 		ibdev_dbg(&iwdev->ibdev,
 			  "VERBS: CQP-OP Create AH fail");
@@ -2299,8 +2332,12 @@ void irdma_free_qp_rsrc(struct irdma_qp *iwqp)
 					   iwqp->sc_qp.user_pri);
 	}
 
-	if (qp_num > 2)
-		irdma_free_rsrc(rf, rf->allocated_qps, qp_num);
+	if (iwqp->ibqp.qp_type == IB_QPT_GSI) {
+		irdma_free_gsi_qp_rsrc(iwqp, qp_num);
+	} else {
+		if (qp_num > 2)
+			irdma_free_rsrc(rf, rf->allocated_qps, qp_num);
+	}
 	dma_free_coherent(rf->sc_dev.hw->device, iwqp->q2_ctx_mem.size,
 			  iwqp->q2_ctx_mem.va, iwqp->q2_ctx_mem.pa);
 	iwqp->q2_ctx_mem.va = NULL;
@@ -2398,20 +2435,24 @@ int irdma_create_qp(struct ib_qp *ibqp,
 	init_info.host_ctx = (__le64 *)(init_info.q2 + IRDMA_Q2_BUF_SIZE);
 	init_info.host_ctx_pa = init_info.q2_pa + IRDMA_Q2_BUF_SIZE;
 
-	if (init_attr->qp_type == IB_QPT_GSI)
-		qp_num = 1;
-	else
+	if (init_attr->qp_type == IB_QPT_GSI) {
+		err_code = irdma_setup_gsi_qp_rsrc(iwqp, &qp_num);
+		if (err_code)
+			goto error;
+		iwqp->ibqp.qp_num = 1;
+	} else {
 		if (dev->hw_attrs.uk_attrs.hw_rev <= IRDMA_GEN_2)
 			err_code = irdma_alloc_rsrc(rf, rf->allocated_qps, rf->max_qp,
 						    &qp_num, &next_qp);
 		else
 			err_code = irdma_alloc_rsrc(rf, rf->allocated_qps, rf->max_qp,
 						    &qp_num, &rf->next_qp);
-	if (err_code)
-		goto error;
+		if (err_code)
+			goto error;
+		iwqp->ibqp.qp_num = qp_num;
+	}
 
 	iwqp->iwpd = iwpd;
-	iwqp->ibqp.qp_num = qp_num;
 	qp = &iwqp->sc_qp;
 	iwqp->iwscq = to_iwcq(init_attr->send_cq);
 	iwqp->iwrcq = to_iwcq(init_attr->recv_cq);
@@ -2489,7 +2530,16 @@ int irdma_create_qp(struct ib_qp *ibqp,
 	spin_lock_init(&iwqp->lock);
 	spin_lock_init(&iwqp->sc_qp.pfpdu.lock);
 	iwqp->sig_all = (init_attr->sq_sig_type == IB_SIGNAL_ALL_WR) ? 1 : 0;
+	init_completion(&iwqp->free_qp);
+#ifdef HAVE_XARRAY
+	err_code = xa_err(xa_store_irq(&rf->qp_xa, qp_num, iwqp, GFP_KERNEL));
+	if (err_code) {
+		kc_irdma_destroy_qp(&iwqp->ibqp, udata);
+		goto error;
+	}
+#else
 	rf->qp_table[qp_num] = iwqp;
+#endif /* HAVE_XARRAY */
 
 	if (rdma_protocol_roce(&iwdev->ibdev, 1)) {
 		if (dev->ws_add(&iwdev->vsi, 0)) {
@@ -2528,14 +2578,14 @@ int irdma_create_qp(struct ib_qp *ibqp,
 			return err_code;
 		}
 	}
-
-	init_completion(&iwqp->free_qp);
 #ifndef RHEL_7_2
+
 	if (dev->hw_wa & NO_STAG0 && qp_num == 1) {
 		ibpd->flags |= IB_PD_UNSAFE_GLOBAL_RKEY;
 		iwqp->iwmr = (struct irdma_mr *)wa_reg_phys_mr(ibpd);
 	}
 #endif /* RHEL_7_2 */
+
 	return 0;
 
 error:
@@ -2563,8 +2613,12 @@ void irdma_free_qp_rsrc(struct irdma_qp *iwqp)
 					   iwqp->sc_qp.user_pri);
 	}
 
-	if (qp_num > 2)
-		irdma_free_rsrc(rf, rf->allocated_qps, qp_num);
+	if (iwqp->ibqp.qp_type == IB_QPT_GSI) {
+		irdma_free_gsi_qp_rsrc(iwqp, qp_num);
+	} else {
+		if (qp_num > 2)
+			irdma_free_rsrc(rf, rf->allocated_qps, qp_num);
+	}
 	dma_free_coherent(rf->sc_dev.hw->device, iwqp->q2_ctx_mem.size,
 			  iwqp->q2_ctx_mem.va, iwqp->q2_ctx_mem.pa);
 	iwqp->q2_ctx_mem.va = NULL;
@@ -2669,20 +2723,24 @@ struct ib_qp *irdma_create_qp(struct ib_pd *ibpd,
 	init_info.host_ctx = (__le64 *)(init_info.q2 + IRDMA_Q2_BUF_SIZE);
 	init_info.host_ctx_pa = init_info.q2_pa + IRDMA_Q2_BUF_SIZE;
 
-	if (init_attr->qp_type == IB_QPT_GSI)
-		qp_num = 1;
-	else
+	if (init_attr->qp_type == IB_QPT_GSI) {
+		err_code = irdma_setup_gsi_qp_rsrc(iwqp, &qp_num);
+		if (err_code)
+			goto error;
+		iwqp->ibqp.qp_num = 1;
+	} else {
 		if (dev->hw_attrs.uk_attrs.hw_rev <= IRDMA_GEN_2)
 			err_code = irdma_alloc_rsrc(rf, rf->allocated_qps, rf->max_qp,
 						    &qp_num, &next_qp);
 		else
 			err_code = irdma_alloc_rsrc(rf, rf->allocated_qps, rf->max_qp,
 						    &qp_num, &rf->next_qp);
-	if (err_code)
-		goto error;
+		if (err_code)
+			goto error;
+		iwqp->ibqp.qp_num = qp_num;
+	}
 
 	iwqp->iwpd = iwpd;
-	iwqp->ibqp.qp_num = qp_num;
 	qp = &iwqp->sc_qp;
 	iwqp->iwscq = to_iwcq(init_attr->send_cq);
 	iwqp->iwrcq = to_iwcq(init_attr->recv_cq);
@@ -2760,7 +2818,16 @@ struct ib_qp *irdma_create_qp(struct ib_pd *ibpd,
 	spin_lock_init(&iwqp->lock);
 	spin_lock_init(&iwqp->sc_qp.pfpdu.lock);
 	iwqp->sig_all = (init_attr->sq_sig_type == IB_SIGNAL_ALL_WR) ? 1 : 0;
+	init_completion(&iwqp->free_qp);
+#ifdef HAVE_XARRAY
+	err_code = xa_err(xa_store_irq(&rf->qp_xa, qp_num, iwqp, GFP_KERNEL));
+	if (err_code) {
+		kc_irdma_destroy_qp(&iwqp->ibqp, udata);
+		goto error;
+	}
+#else
 	rf->qp_table[qp_num] = iwqp;
+#endif /* HAVE_XARRAY */
 
 	if (rdma_protocol_roce(&iwdev->ibdev, 1)) {
 		if (dev->ws_add(&iwdev->vsi, 0)) {
@@ -2799,14 +2866,14 @@ struct ib_qp *irdma_create_qp(struct ib_pd *ibpd,
 			return ERR_PTR(err_code);
 		}
 	}
-
-	init_completion(&iwqp->free_qp);
 #ifndef RHEL_7_2
+
 	if (dev->hw_wa & NO_STAG0 && qp_num == 1) {
 		ibpd->flags |= IB_PD_UNSAFE_GLOBAL_RKEY;
 		iwqp->iwmr = (struct irdma_mr *)wa_reg_phys_mr(ibpd);
 	}
 #endif /* RHEL_7_2 */
+
 	return &iwqp->ibqp;
 
 error:
@@ -2830,10 +2897,17 @@ int irdma_destroy_qp(struct ib_qp *ibqp)
 {
 	struct irdma_qp *iwqp = to_iwqp(ibqp);
 	struct irdma_device *iwdev = iwqp->iwdev;
+	int status;
 
 	if (iwqp->sc_qp.qp_uk.destroy_pending)
 		goto free_rsrc;
 	iwqp->sc_qp.qp_uk.destroy_pending = true;
+
+	/* Decrement RoCE RTS QP count if it was incremented */
+	if (irdma_is_e830(&iwdev->rf->sc_dev) && iwqp->roce_rts_cnt_incr) {
+		iwqp->roce_rts_cnt_incr = false;
+		atomic_dec(&iwdev->rf->roce_rts_qp_cnt);
+	}
 
 	if (iwqp->iwarp_state >= IRDMA_QP_STATE_IDLE)
 		irdma_modify_qp_to_err(&iwqp->sc_qp);
@@ -2849,10 +2923,18 @@ int irdma_destroy_qp(struct ib_qp *ibqp)
 			cancel_delayed_work_sync(&iwqp->dwork_flush);
 	}
 	irdma_qp_rem_ref(&iwqp->ibqp);
-	wait_for_completion(&iwqp->free_qp);
+	if (!iwdev->rf->reset)
+		wait_for_completion(&iwqp->free_qp);
 	irdma_free_lsmm_rsrc(iwqp);
-	if (!iwdev->rf->reset && irdma_cqp_qp_destroy_cmd(&iwdev->rf->sc_dev, &iwqp->sc_qp))
-		return (iwdev->rf->rdma_ver <= IRDMA_GEN_2 && !iwqp->user_mode) ? 0 : -ENOTRECOVERABLE;
+	status = irdma_cqp_qp_destroy_cmd(&iwdev->rf->sc_dev, &iwqp->sc_qp);
+	if (status && !iwdev->rf->reset) {
+		if (iwdev->rf->rdma_ver <= IRDMA_GEN_2 && !iwqp->user_mode) {
+			iwdev->rf->destroy_qp_fail = true;
+			return 0;
+		}
+
+		return -ENOTRECOVERABLE;
+	}
 free_rsrc:
 	irdma_remove_push_mmap_entries(iwqp);
 	irdma_free_qp_rsrc(iwqp);
@@ -3370,6 +3452,7 @@ struct ib_mr *irdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 len,
 				u64 virt, int access,
 				struct ib_dmah *dmah,
 				struct ib_udata *udata)
+{
 #else
 /**
  * irdma_reg_user_mr - Register a user memory region
@@ -3383,8 +3466,8 @@ struct ib_mr *irdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 len,
 struct ib_mr *irdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 len,
 				u64 virt, int access,
 				struct ib_udata *udata)
-#endif
 {
+#endif
 #define IRDMA_MEM_REG_MIN_REQ_LEN offsetofend(struct irdma_mem_reg_req, sq_pages)
 	struct irdma_device *iwdev = to_iwdev(pd->device);
 	struct irdma_mem_reg_req req = {};

@@ -21,6 +21,9 @@
 #include <linux/workqueue.h>
 #include <linux/slab.h>
 #include <linux/io.h>
+#ifdef HAVE_POLL_TIMEOUT_US_ATOMIC
+#include <linux/iopoll.h>
+#endif
 #include <linux/crc32c.h>
 #include <linux/kthread.h>
 #ifndef CONFIG_64BIT
@@ -52,6 +55,7 @@
 #include "pble.h"
 #include "cm.h"
 #include "iidc.h"
+#include "iidc_rdma_idpf.h"
 #include "irdma_kcompat.h"
 #include "irdma-abi.h"
 #include "verbs.h"
@@ -67,11 +71,20 @@ extern bool irdma_upload_context;
 
 extern u32 wa_mem_pages;
 extern u32 hw_type_wa;
+extern ulong hw_wa_bitmask;
+extern bool host_mem_mrte;
+extern u8 rrf_m;
+extern u8 xf_m;
+extern u8 min_ird;
 extern bool irdma_rca_ena;
 extern bool irdma_rca_rq_post;
 extern bool irdma_rca_rq_polarity;
 extern unsigned int irdma_rca_rq_size;
+extern unsigned int irdma_rca_config;
 extern struct auxiliary_driver i40iw_auxiliary_drv;
+extern struct iidc_auxiliary_drv icrdma_auxiliary_drv;
+extern struct iidc_auxiliary_drv ig3rdma_auxiliary_drv;
+extern struct iidc_rdma_vport_auxiliary_drv ig3rdma_vport_auxiliary_drv;
 
 #define IRDMA_FW_VER_DEFAULT	2
 #define IRDMA_HW_VER	        2
@@ -112,7 +125,6 @@ extern struct auxiliary_driver i40iw_auxiliary_drv;
 #define IRDMA_CQP_COMPL_SQ_WQE_FLUSHED	3
 
 #define IRDMA_Q_TYPE_PE_AEQ	0x80
-#define IRDMA_REM_ENDPOINT_TRK_QPID	3
 
 #define IRDMA_DRV_OPT_ENA_MPA_VER_0		0x00000001
 #define IRDMA_DRV_OPT_DISABLE_MPA_CRC		0x00000002
@@ -136,6 +148,10 @@ extern struct auxiliary_driver i40iw_auxiliary_drv;
 #define IRDMA_RCA_CFG_PENDING			BIT(0)
 #define IRDMA_RCA_CFG_EXECUTE			BIT(1)
 #define IRDMA_RCA_CFG_AH_MODIFY			BIT(2)
+#define IRDMA_RCA_CFG_FORWARD                   BIT(3)
+#define IRDMA_RCA_CFG_NO_FORWARD                BIT(4)
+#define IRDMA_RCA_CFG_NO_PENDING                BIT(5)
+#define IRDMA_RCA_CFG_QP_THRESH                 BIT(6)
 
 #define IRDMA_FLUSH_SQ		BIT(0)
 #define IRDMA_FLUSH_RQ		BIT(1)
@@ -294,9 +310,11 @@ struct irdma_gen_ops {
 
 struct irdma_pci_f {
 	bool reset:1;
+	bool irdma_initiated_reset:1;
 	bool rsrc_created:1;
 	bool msix_shared:1;
 	bool ftype:1;
+	bool hwqp1_rsvd:1;
 	u8 rsrc_profile;
 	u16 max_rdma_vfs;
 	u8 *hmc_info_mem;
@@ -309,6 +327,7 @@ struct irdma_pci_f {
 	enum irdma_protocol_used protocol_used;
 	bool en_rem_endpoint_trk:1;
 	bool dcqcn_ena:1;
+	bool destroy_qp_fail;
 	u32 sd_type;
 #ifdef CONFIG_DEBUG_FS
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
@@ -337,6 +356,10 @@ struct irdma_pci_f {
 	u32 used_srqs;
 	u32 used_mrs;
 	u32 used_qps;
+	atomic_t roce_rts_qp_cnt;
+	u32 rtomin_qp_cnt_thresh;
+	u8 roce_rtomin_lo;
+	u8 roce_rtomin_hi;
 	u32 arp_table_size;
 	u32 next_arp_index;
 	u32 ceqs_count;
@@ -367,10 +390,16 @@ struct irdma_pci_f {
 	struct irdma_arp_entry *arp_table;
 	spinlock_t arp_lock; /*protect ARP table access*/
 	spinlock_t rsrc_lock; /* protect HW resource array access */
+#ifndef HAVE_XARRAY
 	spinlock_t qptable_lock; /*protect QP table access*/
+#endif
 	spinlock_t cqtable_lock; /*protect CQ table access*/
 	spinlock_t srqtable_lock; /*protect SRQ table access*/
+#ifdef HAVE_XARRAY
+	struct xarray qp_xa;
+#else
 	struct irdma_qp **qp_table;
+#endif /* HAVE_XARRAY */
 	struct irdma_cq **cq_table;
 	struct irdma_srq **srq_table;
 	spinlock_t qh_list_lock; /* protect mc_qht_list */
@@ -395,8 +424,15 @@ struct irdma_pci_f {
 	u8 vlan_parse_en;
 	struct delayed_work dwork_cqp_poll;
 	u32 chk_stag;
+	int (*idpf_idc_vport_dev_ctrl_func)(struct iidc_core_dev_info *cdev_info, bool up);
+	int (*idpf_idc_request_reset_func)(struct iidc_core_dev_info *cdev_info,
+					   enum iidc_reset_type __always_unused reset_type);
+	int (*idpf_idc_rdma_vc_send_sync_func)(struct iidc_core_dev_info *cdev_info,
+					       u8 *send_msg, u16 msg_size,
+					       u8 *recv_msg, u16 *recv_len);
 	atomic_t ceq0_int_good;
 	atomic_t ceq0_wa_enable;
+	u8 rca_config;
 };
 
 struct irdma_ae_info {
@@ -469,7 +505,6 @@ struct irdma_device {
 	bool roce_dcqcn_en:1;
 	bool dcb_vlan_mode:1;
 	bool iw_ooo:1;
-	u8 rca_config;
 	enum init_completion_state init_state;
 #ifdef CONFIG_DEBUG_FS
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0)
@@ -488,6 +523,8 @@ struct irdma_device {
 	u64 mad_qp_completed_recv_wrs;
 	u64 mad_qp_completed_error_wrs;
 #endif
+	u16 vport_id;
+	bool is_vport;
 };
 
 struct irdma_handler {
@@ -669,6 +706,7 @@ void irdma_srq_wq_destroy(struct irdma_pci_f *rf, struct irdma_sc_srq *srq);
 void irdma_chk_free_stag(struct irdma_pci_f *rf);
 void cqp_poll_worker(struct work_struct *work);
 void irdma_cleanup_pending_cqp_op(struct irdma_pci_f *rf);
+int irdma_get_timeout_threshold(struct irdma_sc_dev *dev);
 int irdma_hw_modify_qp(struct irdma_device *iwdev, struct irdma_qp *iwqp,
 		       struct irdma_modify_qp_info *info, bool wait);
 int irdma_qp_suspend_resume(struct irdma_sc_qp *qp, bool suspend);
@@ -679,6 +717,8 @@ int irdma_manage_qhash(struct irdma_device *iwdev, struct irdma_cm_info *cminfo,
 void irdma_receive_ilq(struct irdma_sc_vsi *vsi, struct irdma_puda_buf *rbuf);
 void irdma_free_sqbuf(struct irdma_sc_vsi *vsi, void *bufp);
 void irdma_free_qp_rsrc(struct irdma_qp *iwqp);
+int irdma_setup_gsi_qp_rsrc(struct irdma_qp *iwqp, u32 *qp_num);
+void irdma_free_gsi_qp_rsrc(struct irdma_qp *iwqp, u32 qp_num);
 int irdma_setup_cm_core(struct irdma_device *iwdev, u8 ver);
 void irdma_cleanup_cm_core(struct irdma_cm_core *cm_core);
 void irdma_next_iw_state(struct irdma_qp *iwqp, u8 state, u8 del_hash, u8 term,
@@ -710,6 +750,7 @@ int irdma_ah_cqp_op(struct irdma_pci_f *rf, struct irdma_sc_ah *sc_ah, u8 cmd,
 		    bool wait,
 		    void (*callback_fcn)(struct irdma_cqp_request *cqp_request),
 		    void *cb_param);
+void irdma_gsi_ud_qp_ah_cb(struct irdma_cqp_request *cqp_request);
 #if IS_ENABLED(CONFIG_CONFIGFS_FS)
 struct irdma_device *irdma_get_device_by_name(const char *name);
 #endif
@@ -745,19 +786,36 @@ void cqp_compl_worker(struct work_struct *work);
 void irdma_cleanup_dead_qps(struct irdma_sc_vsi *vsi);
 static inline void irdma_deinit_device(struct irdma_device *iwdev)
 {
-	if (iwdev->rf->rdma_ver == IRDMA_GEN_2)
+
+	if (iwdev->rf->rdma_ver <= IRDMA_GEN_2 && iwdev->rf->destroy_qp_fail)
 		irdma_cleanup_dead_qps(&iwdev->vsi);
 #ifdef CONFIG_DEBUG_FS
 	irdma_dbg_pf_exit(iwdev->hdl);
 #endif
 	irdma_rt_deinit_hw(iwdev);
-	irdma_ctrl_deinit_hw(iwdev->rf);
 	irdma_del_handler(iwdev->hdl);
 	kfree(iwdev->hdl);
-	if (iwdev->rf->vchnl_wq)
-		destroy_workqueue(iwdev->rf->vchnl_wq);
-	kfree(iwdev->rf);
+	if (!iwdev->is_vport) {
+		irdma_ctrl_deinit_hw(iwdev->rf);
+		if (iwdev->rf->vchnl_wq)
+			destroy_workqueue(iwdev->rf->vchnl_wq);
+		kfree(iwdev->rf);
+	}
 }
+
 int irdma_vchnl_req_aeq_vec_map_gen2(struct irdma_sc_dev *dev, u32 idx);
 int irdma_vchnl_req_ceq_vec_map_gen2(struct irdma_sc_dev *dev, u16 ceq_id, u32 idx);
+int irdma_lan_register_qset(struct irdma_sc_vsi *vsi,
+			    struct irdma_ws_node *tc_node);
+void irdma_lan_unregister_qset(struct irdma_sc_vsi *vsi,
+			       struct irdma_ws_node *tc_node);
+void irdma_request_reset(struct irdma_pci_f *rf);
+void irdma_fill_qos_info(struct irdma_l2params *l2params,
+			 struct iidc_qos_params *qos_info);
+void irdma_iidc_event_handler(struct iidc_core_dev_info *cdev_info,
+			      struct iidc_event *event);
+int irdma_vchnl_receive(struct iidc_core_dev_info *cdev_info, u32 vf_id,
+			u8 *msg, u16 len);
+void irdma_log_invalid_mtu(u16 mtu, struct irdma_sc_dev *dev);
+
 #endif /* IRDMA_MAIN_H */

@@ -38,7 +38,8 @@ static void idpf_deinit_iommu_bypass(struct idpf_adapter *adapter)
 			    adapter->iommu_byp.bypass_size);
 	if (adapter->iommu_byp.ddev) {
 		struct platform_device *ldev =
-			adapter->iommu_byp.ddev->platform_data;
+			container_of(adapter->iommu_byp.ddev,
+				     struct platform_device, dev);
 		platform_device_unregister(ldev);
 	}
 }
@@ -67,7 +68,6 @@ static int idpf_init_iommu_bypass(struct idpf_adapter *adapter,
 		goto iommu_bypass_fail;
 
 	adapter->iommu_byp.ddev = &ldev->dev;
-	adapter->iommu_byp.ddev->platform_data = ldev;
 	adapter->iommu_byp.ddev->cma_area = pdev->dev.cma_area;
 	adapter->iommu_byp.ddev->dma_coherent = true;
 
@@ -87,7 +87,8 @@ static int idpf_init_iommu_bypass(struct idpf_adapter *adapter,
 		err = iommu_map(iodom, adapter->iommu_byp.bypass_iova_addr,
 				adapter->iommu_byp.bypass_phys_addr,
 				adapter->iommu_byp.bypass_size,
-				IOMMU_READ | IOMMU_WRITE | IOMMU_CACHE);
+				IOMMU_READ | IOMMU_WRITE | IOMMU_CACHE,
+				GFP_KERNEL);
 		if (err)
 			goto iommu_bypass_fail;
 		dev_info(&pdev->dev,
@@ -200,9 +201,6 @@ destroy_wqs:
 #ifdef HAVE_PCI_ENABLE_PCIE_ERROR_REPORTING
 	pci_disable_pcie_error_reporting(pdev);
 #endif /* HAVE_PCI_ENABLE_PCIE_ERROR_REPORTING */
-	iounmap(adapter->hw.hw_addr);
-	if (adapter->hw.hw_addr_region2)
-		iounmap(adapter->hw.hw_addr_region2);
 	pci_release_mem_regions(pdev);
 
 #ifdef CONFIG_IOMMU_BYPASS
@@ -226,9 +224,15 @@ static void idpf_shutdown(struct pci_dev *pdev)
 {
 	struct idpf_adapter *adapter = pci_get_drvdata(pdev);
 
+	set_bit(IDPF_REMOVE_IN_PROG, adapter->flags);
+
 	cancel_delayed_work_sync(&adapter->serv_task);
 	cancel_delayed_work_sync(&adapter->vc_event_task);
+
+	idpf_vport_init_lock(adapter);
 	idpf_vc_core_deinit(adapter);
+	idpf_vport_init_unlock(adapter);
+
 	idpf_deinit_dflt_mbx(adapter);
 
 	if (system_state == SYSTEM_POWER_OFF)
@@ -243,38 +247,42 @@ static void idpf_shutdown(struct pci_dev *pdev)
  */
 static int idpf_cfg_hw(struct idpf_adapter *adapter)
 {
-	u64 region2_start = adapter->dev_ops.bar0_region2_start;
+	resource_size_t res_start, mbx_start, rstat_start;
 	struct pci_dev *pdev = adapter->pdev;
 	struct idpf_hw *hw = &adapter->hw;
-	resource_size_t res_start;
+	struct device *dev = &pdev->dev;
 	long len;
 
 	res_start = pci_resource_start(pdev, 0);
-	len = adapter->dev_ops.bar0_region1_size;
-	hw->hw_addr = ioremap(res_start, len);
-	if (!hw->hw_addr) {
-		dev_info(&pdev->dev, "ioremap(0x%04llx) region1 failed:\n",
-			 res_start);
-		return -EIO;
-	}
-	hw->hw_addr_len = len;
 
-	len = pci_resource_len(pdev, 0) - region2_start;
-	if (len <= 0)
-		goto store_hw_info;
+	/* Map mailbox space for virtchnl communication */
+	mbx_start = res_start + adapter->dev_ops.static_reg_info[0].start;
+	len = resource_size(&adapter->dev_ops.static_reg_info[0]);
+	hw->mbx.vaddr = devm_ioremap(dev, mbx_start, len);
+	if (!hw->mbx.vaddr) {
+		pci_err(pdev, "failed to allocate BAR0 mbx region\n");
 
-	hw->hw_addr_region2 = ioremap(res_start + region2_start, len);
-	if (!hw->hw_addr_region2) {
-		dev_info(&pdev->dev, "ioremap(0x%04llx) region2 failed:\n",
-			 res_start + region2_start);
-		return -EIO;
+		return -ENOMEM;
 	}
-	hw->hw_addr_region2_len = len;
-store_hw_info:
+	hw->mbx.addr_start = adapter->dev_ops.static_reg_info[0].start;
+	hw->mbx.addr_len = len;
+
+	/* Map rstat space for resets */
+	rstat_start = res_start + adapter->dev_ops.static_reg_info[1].start;
+	len = resource_size(&adapter->dev_ops.static_reg_info[1]);
+	hw->rstat.vaddr = devm_ioremap(dev, rstat_start, len);
+	if (!hw->rstat.vaddr) {
+		pci_err(pdev, "failed to allocate BAR0 rstat region\n");
+
+		return -ENOMEM;
+	}
+	hw->rstat.addr_start = adapter->dev_ops.static_reg_info[1].start;
+	hw->rstat.addr_len = len;
+
+	hw->back = adapter;
 	hw->vendor_id = pdev->vendor;
 	hw->device_id = pdev->device;
 	hw->subsystem_device_id = pdev->subsystem_device;
-	hw->back = adapter;
 
 	return 0;
 }
@@ -448,8 +456,7 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	err = pci_request_mem_regions(pdev, pci_name(pdev));
 	if (err) {
-		dev_err(dev,
-			"pci_request_selected_regions failed %d\n", err);
+		pci_err(pdev, "pci_request_mem_regions failed %pe\n", ERR_PTR(err));
 		goto err_free;
 	}
 
@@ -627,7 +634,6 @@ int idpf_reset_recover(struct idpf_adapter *adapter)
 
 	queue_delayed_work(adapter->serv_wq, &adapter->serv_task,
 			   msecs_to_jiffies(5 * (adapter->pdev->devfn & 0x07)));
-	queue_delayed_work(adapter->mbx_wq, &adapter->mbx_task, 0);
 
 	/* Initialize the state machine, also allocate memory and request
 	 * resources
@@ -645,7 +651,6 @@ int idpf_reset_recover(struct idpf_adapter *adapter)
 	return 0;
 
 init_err:
-	cancel_delayed_work_sync(&adapter->mbx_task);
 	cancel_delayed_work_sync(&adapter->serv_task);
 	idpf_deinit_dflt_mbx(adapter);
 
@@ -660,7 +665,7 @@ init_err:
  */
 bool idpf_is_reset_detected(struct idpf_adapter *adapter)
 {
-	struct idpf_ctlq_reg reg;
+	struct idpf_ctlq_reg *reg;
 	u32 arqlen;
 	/* No need to check reset state in CORER */
 	if (test_bit(IDPF_CORER_IN_PROG, adapter->flags))
@@ -669,11 +674,11 @@ bool idpf_is_reset_detected(struct idpf_adapter *adapter)
 	if (!adapter->hw.arq)
 		return true;
 
-	reg = adapter->hw.arq->reg;
-	arqlen = readl(idpf_get_reg_addr(adapter, reg.len));
+	reg = &adapter->hw.arq->reg;
+	arqlen = readl(idpf_get_mbx_reg_addr(adapter, reg->len));
 
 	/* We are in reset if either LEN or ENA bits are cleared. */
-	return (!(arqlen & reg.len_mask) || !(arqlen & reg.len_ena_mask));
+	return (!(arqlen & reg->len_mask) || !(arqlen & reg->len_ena_mask));
 }
 
 /**
@@ -682,16 +687,16 @@ bool idpf_is_reset_detected(struct idpf_adapter *adapter)
  */
 static void idpf_reset_prepare(struct idpf_adapter *adapter)
 {
+	idpf_idc_issue_reset_event(adapter->cdev_info);
+
+	idpf_detach_and_close(adapter);
+	idpf_vc_xn_shutdown(adapter->vcxn_mngr);
 	idpf_vport_init_lock(adapter);
 	cancel_delayed_work_sync(&adapter->serv_task);
 	cancel_delayed_work_sync(&adapter->vc_event_task);
 	set_bit(IDPF_HR_RESET_IN_PROG, adapter->flags);
 	dev_info(idpf_adapter_to_dev(adapter), "Device FLR Reset initiated\n");
 
-	idpf_device_detach(adapter);
-	idpf_netdev_stop_all(adapter);
-	idpf_idc_event(&adapter->rdma_data, IIDC_EVENT_WARN_RESET);
-	idpf_set_vport_state(adapter);
 	idpf_vc_core_deinit(adapter);
 	idpf_deinit_dflt_mbx(adapter);
 
@@ -789,6 +794,11 @@ static void idpf_pci_err_resume(struct pci_dev *pdev)
 
 	/* Wait for all init_task WQs to complete */
 	flush_delayed_work(&adapter->init_task);
+
+	if (!err) {
+		idpf_attach_and_open(adapter);
+		idpf_idc_init(adapter);
+	}
 }
 
 #ifdef HAVE_PCI_ERROR_HANDLER_RESET_PREPARE

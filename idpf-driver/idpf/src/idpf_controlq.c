@@ -95,15 +95,13 @@ static void idpf_ctlq_init_rxq_bufs(struct idpf_ctlq_info *cq)
  */
 static void idpf_ctlq_shutdown(struct idpf_hw *hw, struct idpf_ctlq_info *cq)
 {
-	spin_lock(&cq->cq_lock);
+	WARN_ON(spin_is_locked(&cq->cq_lock));
 
 	/* free ring buffers and the ring itself */
 	idpf_ctlq_dealloc_ring_res(hw, cq);
 
 	/* Set ring_size to 0 to indicate uninitialized queue */
 	cq->ring_size = 0;
-
-	spin_unlock(&cq->cq_lock);
 }
 
 /**
@@ -385,7 +383,7 @@ static int __idpf_ctlq_clean_sq(struct idpf_ctlq_info *cq, u16 *clean_count,
 			break;
 
 		/* This barrier is needed to ensure that no other fields
-		 *  are read until we check 	the DD flag
+		 * are read until we check the DD flag
 		 */
 		dma_rmb();
 		/* strip off FW internal code */
@@ -631,7 +629,7 @@ int idpf_ctlq_recv(struct idpf_ctlq_info *cq, u16 *num_q_msg,
 			break;
 
 		/* This barrier is needed to ensure that no other fields
-		 *  are read until we check 	the DD flag
+		 * are read until we check the DD flag
 		 */
 		dma_rmb();
 		ret_val = le16_to_cpu(desc->ret_val);

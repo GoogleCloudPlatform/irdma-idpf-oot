@@ -894,7 +894,7 @@ void irdma_cleanup_pending_cqp_op(struct irdma_pci_f *rf)
 	}
 }
 
-static int irdma_get_timeout_threshold(struct irdma_sc_dev *dev)
+int irdma_get_timeout_threshold(struct irdma_sc_dev *dev)
 {
 	u16 time_s = dev->vc_caps.cqp_timeout_s;
 
@@ -936,6 +936,10 @@ static int irdma_wait_event(struct irdma_pci_f *rf,
 				       atomic_read(&cqp_request->request_done),
 				       msecs_to_jiffies(wait_time_ms)))
 			break;
+
+		if (rf->reset)
+			return -ENODEV;
+
 		if (cqp_request->info.cqp_cmd_exec_status) {
 			ibdev_dbg(to_ibdev(&rf->sc_dev),
 				  "CQP: %s (%d) cqp op error status reported: %d, %d %x %x\n",
@@ -963,6 +967,7 @@ static int irdma_wait_event(struct irdma_pci_f *rf,
 
 		if (!rf->reset) {
 			rf->reset = true;
+			rf->irdma_initiated_reset = true;
 			rf->gen_ops.request_reset(rf);
 		}
 		return -ETIMEDOUT;
@@ -977,6 +982,7 @@ static int irdma_wait_event(struct irdma_pci_f *rf,
 			} else if (cqp_request->compl_info.min_err_code == 0x8029) {
 				if (!rf->reset) {
 					rf->reset = true;
+					rf->irdma_initiated_reset = true;
 					rf->gen_ops.request_reset(rf);
 				}
 			}
@@ -1152,6 +1158,16 @@ void irdma_qp_rem_ref(struct ib_qp *ibqp)
 	struct irdma_device *iwdev = iwqp->iwdev;
 	unsigned long flags;
 
+#ifdef HAVE_XARRAY
+	xa_lock_irqsave(&iwdev->rf->qp_xa, flags);
+	if (!refcount_dec_and_test(&iwqp->refcnt)) {
+		xa_unlock_irqrestore(&iwdev->rf->qp_xa, flags);
+		return;
+	}
+
+	__xa_erase(&iwdev->rf->qp_xa, iwqp->ibqp.qp_num);
+	xa_unlock_irqrestore(&iwdev->rf->qp_xa, flags);
+#else
 	spin_lock_irqsave(&iwdev->rf->qptable_lock, flags);
 	if (!refcount_dec_and_test(&iwqp->refcnt)) {
 		spin_unlock_irqrestore(&iwdev->rf->qptable_lock, flags);
@@ -1160,6 +1176,7 @@ void irdma_qp_rem_ref(struct ib_qp *ibqp)
 
 	iwdev->rf->qp_table[iwqp->ibqp.qp_num] = NULL;
 	spin_unlock_irqrestore(&iwdev->rf->qptable_lock, flags);
+#endif /* HAVE_XARRAY */
 	complete(&iwqp->free_qp);
 }
 
@@ -1182,6 +1199,7 @@ void irdma_cq_rem_ref(struct ib_cq *ibcq)
 		return;
 	}
 
+	/* may be asynchronously sampled by CEQ ISR without holding tbl lock */
 	WRITE_ONCE(rf->cq_table[iwcq->cq_num], NULL);
 	spin_unlock_irqrestore(&rf->cqtable_lock, flags);
 	complete(&iwcq->free_cq);
@@ -1231,11 +1249,21 @@ struct ib_device *to_ibdev(struct irdma_sc_dev *dev)
 struct ib_qp *irdma_get_qp(struct ib_device *device, int qpn)
 {
 	struct irdma_device *iwdev = to_iwdev(device);
+#ifdef HAVE_XARRAY
+	struct irdma_qp *iqp;
+#endif
 
 	if (qpn < IW_FIRST_QPN || qpn >= iwdev->rf->max_qp)
 		return NULL;
 
+#ifdef HAVE_XARRAY
+	iqp = xa_load(&iwdev->rf->qp_xa, qpn);
+	if (!iqp)
+		return NULL;
+	return &iqp->ibqp;
+#else
 	return &iwdev->rf->qp_table[qpn]->ibqp;
+#endif /* HAVE_XARRAY */
 }
 
 /**
@@ -1701,6 +1729,67 @@ void irdma_dealloc_push_page(struct irdma_pci_f *rf,
 	irdma_put_cqp_request(&rf->cqp, cqp_request);
 }
 
+int irdma_setup_gsi_qp_rsrc(struct irdma_qp *iwqp, u32 *qp_num)
+{
+	struct irdma_device *iwdev = iwqp->iwdev;
+	struct irdma_pci_f *rf = iwdev->rf;
+	unsigned long flags;
+	int ret;
+
+	if (rf->rdma_ver <= IRDMA_GEN_2) {
+		*qp_num = 1;
+		return 0;
+	}
+
+	spin_lock_irqsave(&rf->rsrc_lock, flags);
+	if (!rf->hwqp1_rsvd) {
+		*qp_num = 1;
+		rf->hwqp1_rsvd = true;
+		spin_unlock_irqrestore(&rf->rsrc_lock, flags);
+	} else {
+		spin_unlock_irqrestore(&rf->rsrc_lock, flags);
+		ret = irdma_alloc_rsrc(rf, rf->allocated_qps, rf->max_qp,
+				       qp_num, &rf->next_qp);
+		if (ret)
+			return ret;
+	}
+
+	ret = irdma_vchnl_req_add_vport(&rf->sc_dev, iwdev->vport_id, *qp_num,
+					(&iwdev->vsi)->qos);
+	if (ret) {
+		if (*qp_num != 1) {
+			irdma_free_rsrc(rf, rf->allocated_qps, *qp_num);
+		} else {
+			spin_lock_irqsave(&rf->rsrc_lock, flags);
+			rf->hwqp1_rsvd = false;
+			spin_unlock_irqrestore(&rf->rsrc_lock, flags);
+		}
+		return ret;
+	}
+
+	return 0;
+}
+
+void irdma_free_gsi_qp_rsrc(struct irdma_qp *iwqp, u32 qp_num)
+{
+	struct irdma_device *iwdev = iwqp->iwdev;
+	struct irdma_pci_f *rf = iwdev->rf;
+	unsigned long flags;
+
+	if (rf->sc_dev.hw_attrs.uk_attrs.hw_rev <= IRDMA_GEN_2)
+		return;
+
+	irdma_vchnl_req_del_vport(&rf->sc_dev, iwdev->vport_id, qp_num);
+
+	if (qp_num == 1) {
+		spin_lock_irqsave(&rf->rsrc_lock, flags);
+		rf->hwqp1_rsvd = false;
+		spin_unlock_irqrestore(&rf->rsrc_lock, flags);
+	} else if (qp_num > 2) {
+		irdma_free_rsrc(rf, rf->allocated_qps, qp_num);
+	}
+}
+
 /**
  * irdma_srq_wq_destroy - send srq destroy cqp
  * @rf: RDMA PCI function
@@ -2013,7 +2102,7 @@ struct irdma_sc_qp *irdma_ieq_get_qp(struct irdma_sc_dev *dev,
 		return NULL;
 
 	iwqp = cm_node->iwqp;
-	irdma_rem_ref_cm_node(cm_node);
+	irdma_rem_ref_cmnode(cm_node);
 
 	return &iwqp->sc_qp;
 }
@@ -2838,13 +2927,14 @@ static int irdma_ah_do_cqp(struct irdma_pci_f *rf, struct irdma_sc_ah *sc_ah, u8
 		return -ENOMEM;
 
 	if (wait)
-		sc_ah->ah_info.ah_valid = (cmd != IRDMA_OP_AH_DESTROY);
+		atomic_set(&sc_ah->ah_info.ah_valid,
+			   (cmd != IRDMA_OP_AH_DESTROY));
 
 	/* Post Modify AH CQP op with exactly the same parameters right after
 	 * Create AH.  This is only to test if Modify AH is properly forwarded
 	 * to RCA and processed by CQP.
 	 */
-	if (rf->iwdev->rca_config & IRDMA_RCA_CFG_AH_MODIFY &&
+	if (rf->rca_config & IRDMA_RCA_CFG_AH_MODIFY &&
 	    cmd == IRDMA_OP_AH_CREATE)
 		irdma_ah_cqp_op(rf, sc_ah, IRDMA_OP_AH_MODIFY, true,
 				NULL, NULL);
@@ -2893,10 +2983,10 @@ static void irdma_ieq_ah_cb(struct irdma_cqp_request *cqp_request)
 
 	spin_lock_irqsave(&qp->pfpdu.lock, flags);
 	if (!cqp_request->compl_info.op_ret_val) {
-		sc_ah->ah_info.ah_valid = true;
+		atomic_set(&sc_ah->ah_info.ah_valid, true);
 		irdma_ieq_process_fpdus(qp, qp->vsi->ieq);
 	} else {
-		sc_ah->ah_info.ah_valid = false;
+		atomic_set(&sc_ah->ah_info.ah_valid, false);
 		irdma_ieq_cleanup_qp(qp->vsi->ieq, qp);
 	}
 	spin_unlock_irqrestore(&qp->pfpdu.lock, flags);
@@ -2914,7 +3004,8 @@ static void irdma_ilq_ah_cb(struct irdma_cqp_request *cqp_request)
 	struct irdma_cm_node *cm_node = cqp_request->param;
 	struct irdma_sc_ah *sc_ah = cm_node->ah;
 
-	sc_ah->ah_info.ah_valid = !cqp_request->compl_info.op_ret_val;
+	atomic_set(&sc_ah->ah_info.ah_valid,
+		   !cqp_request->compl_info.op_ret_val);
 	irdma_add_conn_est_qh(cm_node);
 	if (!cqp_request->waiting)
 		irdma_put_cqp_request(sc_ah->dev->cqp->back_cqp,
@@ -2984,12 +3075,26 @@ void irdma_puda_free_ah(struct irdma_sc_dev *dev, struct irdma_sc_ah *ah)
 	if (!ah)
 		return;
 
-	if (ah->ah_info.ah_valid) {
+	if (atomic_read(&ah->ah_info.ah_valid)) {
 		irdma_ah_cqp_op(rf, ah, IRDMA_OP_AH_DESTROY, false, NULL, NULL);
 		irdma_free_rsrc(rf, rf->allocated_ahs, ah->ah_info.ah_idx);
 	}
 
 	kfree(ah);
+}
+
+/**
+ * irdma_gsi_ud_qp_ah_cb - callback after creation of AH for GSI/ID QP
+ * @cqp_request: pointer to cqp_request of create AH
+ */
+void irdma_gsi_ud_qp_ah_cb(struct irdma_cqp_request *cqp_request)
+{
+	struct irdma_sc_ah *sc_ah = cqp_request->param;
+
+	if (!cqp_request->compl_info.op_ret_val)
+		atomic_set(&sc_ah->ah_info.ah_valid, true);
+	else
+		atomic_set(&sc_ah->ah_info.ah_valid, false);
 }
 
 /**
@@ -3142,7 +3247,7 @@ void irdma_pble_free_paged_mem(struct irdma_chunk *chunk)
 				 chunk->pg_cnt);
 
 done:
-	kfree(chunk->dmainfo.dmaaddrs);
+	kvfree(chunk->dmainfo.dmaaddrs);
 	chunk->dmainfo.dmaaddrs = NULL;
 	vfree(chunk->vaddr);
 	chunk->vaddr = NULL;
@@ -3159,7 +3264,7 @@ int irdma_pble_get_paged_mem(struct irdma_chunk *chunk, u32 pg_cnt)
 	u32 size;
 	void *va;
 
-	chunk->dmainfo.dmaaddrs = kzalloc(pg_cnt << 3, GFP_KERNEL);
+	chunk->dmainfo.dmaaddrs = kvzalloc(pg_cnt << 3, GFP_KERNEL);
 	if (!chunk->dmainfo.dmaaddrs)
 		return -ENOMEM;
 
@@ -3180,7 +3285,7 @@ int irdma_pble_get_paged_mem(struct irdma_chunk *chunk, u32 pg_cnt)
 
 	return 0;
 err:
-	kfree(chunk->dmainfo.dmaaddrs);
+	kvfree(chunk->dmainfo.dmaaddrs);
 	chunk->dmainfo.dmaaddrs = NULL;
 
 	return -ENOMEM;
@@ -3638,6 +3743,7 @@ void irdma_chk_free_stag(struct irdma_pci_f *rf)
 	cqp_info = &cqp_request->info;
 	info = &cqp_info->in.u.dealloc_stag.info;
 	info->stag_idx = RS_64_1(rf->chk_stag, IRDMA_CQPSQ_STAG_IDX_S);
+	info->print_cmd = false;
 	cqp_info->cqp_cmd = IRDMA_OP_DEALLOC_STAG;
 	cqp_info->post_sq = 1;
 	cqp_info->in.u.dealloc_stag.dev = &rf->sc_dev;

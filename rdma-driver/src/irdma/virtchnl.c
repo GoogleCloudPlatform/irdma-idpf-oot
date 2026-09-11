@@ -9,6 +9,7 @@
 #include "virtchnl.h"
 #include "ws.h"
 #include "i40iw_hw.h"
+#include "ig3rdma_hw.h"
 extern bool irdma_rca_ena;
 
 struct vchnl_reg_map_elem {
@@ -1048,27 +1049,38 @@ int irdma_vchnl_req_get_reg_layout(struct irdma_sc_dev *dev)
 			continue;
 
 		reg_idx = reg_map_array->reg_idx;
-		if (irdma_rca_ena && dev->is_pf)
-			hw_addr = dev->db_addr;
-		else
-			hw_addr = dev->hw->hw_addr;
 
 		/* Page relative, DB Offset do not need bar offset */
 		if (reg_idx == IRDMA_DB_ADDR_OFFSET ||
-		    (reg_array[rindex].reg_id & IRDMA_VCHNL_REG_PAGE_REL))
-			hw_addr = NULL;
+		    (reg_array[rindex].reg_id & IRDMA_VCHNL_REG_PAGE_REL)) {
+			dev->hw_regs[reg_idx] =
+				(u32 __iomem *)(uintptr_t)reg_array[rindex].reg_offset;
+			continue;
+		}
+
 
 		/* Update the local HW struct */
-		if (reg_idx == IRDMA_GLINT_DYN_CTL)
-			dev->hw_regs[reg_idx] = (u32 __iomem *)
-				(hw_addr + reg_array[rindex].reg_offset);
-		else
-			dev->hw_regs[reg_idx] = (u32 __iomem *)
-				(hw_addr + reg_array[rindex].reg_offset +
-				 db_page_offset);
-
+		if (irdma_rca_ena && dev->is_pf) {
+			hw_addr = dev->db_addr;
+			if (reg_idx == IRDMA_GLINT_DYN_CTL)
+				dev->hw_regs[reg_idx] = (u32 __iomem *)
+					(hw_addr + reg_array[rindex].reg_offset);
+			else
+				dev->hw_regs[reg_idx] = (u32 __iomem *)
+					(hw_addr + reg_array[rindex].reg_offset +
+					 db_page_offset);
+		} else {
+			if (reg_idx == IRDMA_GLINT_DYN_CTL)
+				dev->hw_regs[reg_idx] =
+					ig3rdma_get_reg_addr(dev->hw, reg_array[rindex].reg_offset);
+			else
+				dev->hw_regs[reg_idx] =
+					ig3rdma_get_reg_addr(dev->hw, reg_array[rindex].reg_offset);
+		}
 		ibdev_dbg(to_ibdev(dev), "VIRT: hw_regs[%d] %lx\n", reg_idx,
 			  (uintptr_t)dev->hw_regs[reg_idx]);
+		if (!dev->hw_regs[reg_idx])
+			return -EINVAL;
 	}
 
 	if (!regfld_array)

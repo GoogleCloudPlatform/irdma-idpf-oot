@@ -25,6 +25,7 @@ void irdma_init_config_check(struct irdma_config_check *cc,
 			     u16 qs_handle);
 /* HMC/FPM functions */
 int irdma_sc_init_iw_hmc(struct irdma_sc_dev *dev, u16 hmc_fn_id);
+void irdma_sc_fw_scratch_buf_free(struct irdma_sc_dev *dev);
 int irdma_pf_init_vfhmc(struct irdma_sc_dev *dev, u8 vf_hmc_fn_id);
 /* stats misc */
 int irdma_cqp_gather_stats_cmd(struct irdma_sc_dev *dev,

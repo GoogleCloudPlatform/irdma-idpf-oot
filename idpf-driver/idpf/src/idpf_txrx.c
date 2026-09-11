@@ -938,6 +938,8 @@ static int idpf_rx_map_buffer_rings(struct idpf_q_grp *q_grp)
 
 				rxq->rx.bufq_bufs[j] = bufq->rx.bufs;
 
+				rxq->rx.refillqs = rx_qgrp->splitq.bufq_sets[j].refillqs;
+
 				if (!rxq->rx_hsplit_en)
 					continue;
 
@@ -1868,13 +1870,6 @@ static int idpf_rxq_group_alloc(struct idpf_vport *vport, struct idpf_q_grp *q_g
 				struct idpf_sw_queue *refillq =
 					&bufq_set->refillqs[k];
 
-#ifdef CONFIG_IOMMU_BYPASS
-#ifdef CONFIG_ARM64
-				if (vport->adapter->iommu_byp.ddev)
-					refillq->dev = vport->adapter->iommu_byp.ddev;
-				else
-#endif /* CONFIG_ARM64 */
-#endif /* CONFIG_IOMMU_BYPASS */
 				refillq->desc_count =
 					q_grp->bufq_desc_count[j];
 				idpf_queue_set(GEN_CHK, refillq);
@@ -3402,21 +3397,6 @@ void idpf_tx_set_tstamp_desc(union idpf_flex_tx_ctx_desc *ctx_desc, u32 idx)
 #endif /* CONFIG_PTP_1588_CLOCK && CONFIG_PTP */
 
 /**
- * idpf_tx_splitq_need_re - check whether RE bit needs to be set
- * @tx_q: the tx ring to verify
- *
- * Return: true if RE bit needs to be set, false otherwise
- */
-static inline bool idpf_tx_splitq_need_re(struct idpf_queue *tx_q)
-{
-	int gap = tx_q->next_to_use - tx_q->tx.last_re;
-
-	gap += (gap < 0) ? tx_q->desc_count : 0;
-
-	return gap >= IDPF_TX_SPLITQ_RE_MIN_GAP;
-}
-
-/**
  * idpf_tx_prepare_vlan_tag - prepare context descriptor with VLAN tag
  * @tx_q: TX queue to get the next available descriptor
  * @skb: send buffer to extract the VLAN tag
@@ -4424,6 +4404,16 @@ int idpf_xmit_xdpq(struct xdp_buff *xdp, struct idpf_queue *xdpq)
 			return IDPF_XDP_CONSUMED;
 
 		tx_params.compl_tag = buf_id;
+
+		/* Set the RE bit to periodically "clean" the descriptor ring.
+		 * MIN_GAP is set to MIN_RING size to ensure it will be set at
+		 * least once each time around the ring.
+		 */
+		if (idpf_tx_splitq_need_re(xdpq)) {
+			tx_params.eop_cmd |= IDPF_TXD_FLEX_FLOW_CMD_RE;
+			xdpq->txq_grp->num_completions_pending++;
+			xdpq->tx.last_re = xdpq->next_to_use;
+		}
 	} else {
 		buf_id = ntu;
 	}
@@ -4436,8 +4426,6 @@ int idpf_xmit_xdpq(struct xdp_buff *xdp, struct idpf_queue *xdpq)
 #else
 	tx_buf->raw = data;
 #endif
-	idpf_tx_buf_compl_tag(&xdpq->tx.bufs[buf_id]) = tx_params.compl_tag;
-
 	/* record length, and DMA address */
 	dma_unmap_len_set(tx_buf, len, size);
 	dma_unmap_addr_set(tx_buf, dma, dma);
@@ -5077,6 +5065,9 @@ static void idpf_vport_intr_rel_irq(struct idpf_vport *vport,
 #ifndef HAVE_NETDEV_IRQ_AFFINITY_AND_ARFS
 		/* clear the affinity_mask in the IRQ descriptor */
 		irq_set_affinity_notifier(irq_num, NULL);
+#ifndef HAVE_EXPORTED_IRQ_SET_AFFINITY
+		irq_set_affinity_hint(irq_num, NULL);
+#endif /* !HAVE_EXPORTED_IRQ_SET_AFFINITY */
 #endif /* !HAVE_NETDEV_IRQ_AFFINITY_AND_ARFS */
 		kfree(free_irq(irq_num, q_vector));
 		kfree(q_vector->name);

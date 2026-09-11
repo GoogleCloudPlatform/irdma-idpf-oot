@@ -15,6 +15,34 @@ extern bool irdma_rca_rq_polarity;
 static bool irdma_rca_rq_posted;
 
 /**
+ * irdma_sc_cqp_post_sq_print - post on cqp's sq and print
+ * @cqp: struct for cqp hw
+ * @pr_sq_head: print cqp sq head in dbg if set
+ */
+static void irdma_sc_cqp_post_sq_print(struct irdma_sc_cqp *cqp, bool pr_sq_head)
+{
+	writel(IRDMA_RING_CURRENT_HEAD(cqp->sq_ring), cqp->dev->cqp_db);
+	if (pr_sq_head)
+		ibdev_dbg(to_ibdev(cqp->dev),
+		          "WQE: CQP SQ head 0x%x tail 0x%x size 0x%x\n",
+		          cqp->sq_ring.head, cqp->sq_ring.tail,
+		          cqp->sq_ring.size);
+}
+
+/**
+ * irdma_sc_cqp_post_sq - post on cqp's sq
+ * @cqp: struct for cqp hw
+ */
+void irdma_sc_cqp_post_sq(struct irdma_sc_cqp *cqp)
+{
+	writel(IRDMA_RING_CURRENT_HEAD(cqp->sq_ring), cqp->dev->cqp_db);
+
+	ibdev_dbg(to_ibdev(cqp->dev),
+		  "WQE: CQP SQ head 0x%x tail 0x%x size 0x%x\n",
+		  cqp->sq_ring.head, cqp->sq_ring.tail, cqp->sq_ring.size);
+}
+
+/**
  * hmc_obj_name - return name from hmc resource type
  * @type: resource type whose name to return
  */
@@ -1803,10 +1831,12 @@ static int irdma_sc_dealloc_stag(struct irdma_sc_dev *dev,
 
 	set_64bit_val(wqe, 24, hdr);
 
-	print_hex_dump_debug("WQE: DEALLOC_STAG WQE", DUMP_PREFIX_OFFSET, 16,
-			     8, wqe, IRDMA_CQP_WQE_SIZE * 8, false);
+	if (info->print_cmd)
+		print_hex_dump_debug("WQE: DEALLOC_STAG WQE",
+				     DUMP_PREFIX_OFFSET, 16, 8, wqe,
+				     IRDMA_CQP_WQE_SIZE * 8, false);
 	if (post_sq)
-		irdma_sc_cqp_post_sq(cqp);
+		irdma_sc_cqp_post_sq_print(cqp, info->print_cmd);
 
 	return 0;
 }
@@ -1846,10 +1876,12 @@ static int irdma_sc_mw_alloc(struct irdma_sc_dev *dev,
 
 	set_64bit_val(wqe, 24, hdr);
 
-	print_hex_dump_debug("WQE: MW_ALLOC WQE", DUMP_PREFIX_OFFSET, 16, 8,
-			     wqe, IRDMA_CQP_WQE_SIZE * 8, false);
+	if (info->print_cmd)
+		print_hex_dump_debug("WQE: MW_ALLOC WQE", DUMP_PREFIX_OFFSET,
+				     16, 8, wqe, IRDMA_CQP_WQE_SIZE * 8,
+				     false);
 	if (post_sq)
-		irdma_sc_cqp_post_sq(cqp);
+		irdma_sc_cqp_post_sq_print(cqp, info->print_cmd);
 
 	return 0;
 }
@@ -1894,7 +1926,6 @@ int irdma_sc_mr_fast_register(struct irdma_sc_qp *qp,
 	temp = (info->addr_type == IRDMA_ADDR_TYPE_VA_BASED) ?
 		(uintptr_t)info->va : info->fbo;
 	set_64bit_val(wqe, 0, temp);
-
 	temp = FIELD_GET(IRDMAQPSQ_FIRSTPMPBLIDXHI,
 			 info->first_pm_pbl_index >> 16);
 	set_64bit_val(wqe, 8,
@@ -2893,10 +2924,8 @@ static int irdma_sc_gather_stats(struct irdma_sc_cqp *cqp,
 
 	set_64bit_val(wqe, 24, temp);
 
-	print_hex_dump_debug("STATS: GATHER_STATS WQE", DUMP_PREFIX_OFFSET,
-			     16, 8, wqe, IRDMA_CQP_WQE_SIZE * 8, false);
+	irdma_sc_cqp_post_sq_print(cqp, false);
 
-	irdma_sc_cqp_post_sq(cqp);
 	return 0;
 }
 
@@ -3408,10 +3437,7 @@ static int irdma_sc_cq_create(struct irdma_sc_cq *cq, u64 scratch,
 	}
 
 	set_64bit_val(wqe, 0, cq->cq_uk.cq_size);
-	if (cqp->dev->hw_wa & DEFUNCT_CQ_WA)
-		set_64bit_val(wqe, 8, cq->cq_uk.cq_id);
-	else
-		set_64bit_val(wqe, 8, RS_64_1(cq, 1));
+	set_64bit_val(wqe, 8, cq->cq_uk.cq_id);
 	set_64bit_val(wqe, 16,
 		      FIELD_PREP(IRDMA_CQPSQ_CQ_SHADOW_READ_THRESHOLD,
 				 cq->shadow_read_threshold));
@@ -3474,7 +3500,6 @@ int irdma_sc_cq_destroy(struct irdma_sc_cq *cq, u64 scratch, bool post_sq)
 		return -ENOMEM;
 
 	set_64bit_val(wqe, 0, cq->cq_uk.cq_size);
-	set_64bit_val(wqe, 8, RS_64_1(cq, 1));
 	set_64bit_val(wqe, 40, cq->shadow_area_pa);
 	set_64bit_val(wqe, 48,
 		      (cq->virtual_map ? cq->first_pm_pbl_idx : 0));
@@ -3548,7 +3573,7 @@ static int irdma_sc_cq_modify(struct irdma_sc_cq *cq,
 		return -ENOMEM;
 
 	set_64bit_val(wqe, 0, info->cq_size);
-	set_64bit_val(wqe, 8, RS_64_1(cq, 1));
+	set_64bit_val(wqe, 8, cq->cq_uk.cq_id);
 	set_64bit_val(wqe, 16,
 		      FIELD_PREP(IRDMA_CQPSQ_CQ_SHADOW_READ_THRESHOLD, info->shadow_read_threshold));
 	set_64bit_val(wqe, 32, info->cq_pa);
@@ -3616,6 +3641,28 @@ static inline void irdma_get_cqp_reg_info(struct irdma_sc_cqp *cqp, u32 *val,
 	*val = readl(cqp->dev->hw_regs[IRDMA_CQPTAIL]);
 	*tail = FIELD_GET(IRDMA_CQPTAIL_WQTAIL, *val);
 	*error = FIELD_GET(IRDMA_CQPTAIL_CQP_OP_ERR, *val);
+}
+
+/**
+ * irdma_sc_fw_scratch_buf_free - Free FW scratch buffers passed during FPM commit
+ * @dev: sc device struct
+ */
+void irdma_sc_fw_scratch_buf_free(struct irdma_sc_dev *dev)
+{
+	if (dev->hmc_fpm_misc.fw_scratch_buf0.va) {
+		dma_free_coherent(dev->hw->device,
+				  dev->hmc_fpm_misc.fw_scratch_buf0.size,
+				  dev->hmc_fpm_misc.fw_scratch_buf0.va,
+				  dev->hmc_fpm_misc.fw_scratch_buf0.pa);
+		dev->hmc_fpm_misc.fw_scratch_buf0.va = NULL;
+	}
+	if (dev->hmc_fpm_misc.fw_scratch_buf1.va) {
+		dma_free_coherent(dev->hw->device,
+				  dev->hmc_fpm_misc.fw_scratch_buf1.size,
+				  dev->hmc_fpm_misc.fw_scratch_buf1.va,
+				  dev->hmc_fpm_misc.fw_scratch_buf1.pa);
+		dev->hmc_fpm_misc.fw_scratch_buf1.va = NULL;
+	}
 }
 
 /**
@@ -4474,19 +4521,6 @@ err:
 }
 
 /**
- * irdma_sc_cqp_post_sq - post of cqp's sq
- * @cqp: struct for cqp hw
- */
-void irdma_sc_cqp_post_sq(struct irdma_sc_cqp *cqp)
-{
-	writel(IRDMA_RING_CURRENT_HEAD(cqp->sq_ring), cqp->dev->cqp_db);
-
-	ibdev_dbg(to_ibdev(cqp->dev),
-		  "WQE: CQP SQ head 0x%x tail 0x%x size 0x%x\n",
-		  cqp->sq_ring.head, cqp->sq_ring.tail, cqp->sq_ring.size);
-}
-
-/**
  * irdma_sc_cqp_get_next_send_wqe_idx - get next wqe on cqp sq
  * and pass back index
  * @cqp: CQP HW structure
@@ -4577,8 +4611,6 @@ void irdma_sc_ccq_arm(struct irdma_sc_cq *ccq)
 		   FIELD_PREP(IRDMA_CQ_DBSA_ARM_NEXT, 1);
 	set_64bit_val(ccq->cq_uk.shadow_area, 32, temp_val);
 	spin_unlock_irqrestore(&ccq->dev->cqp_lock, flags);
-
-	dma_wmb(); /* make sure shadow area is updated before arming */
 
 	writel(ccq->cq_uk.cq_id, ccq->dev->cq_arm_db);
 }
@@ -5190,104 +5222,66 @@ int irdma_sc_ceq_destroy(struct irdma_sc_ceq *ceq, u64 scratch, bool post_sq)
 }
 
 /**
- * irdma_sc_process_ceq_ex - process ceq for gen3 HW
+ * irdma_sc_process_ceq - process ceq
  * @dev: sc device struct
  * @ceq: ceq sc structure
+ * @cq_idx: pointer to CQ ID that will be populated
  *
- * GEN3/GEN4 HW uses the CQ ID for the CEQE context rather than the direct
- * pointer. Unlike the normal routine, the caller must ack the CQ.
+ * It is expected caller serializes this function with cleanup_ceqes()
+ * because these functions manipulate the same ceq.
+ *
+ * Return: True if cq_idx has been populated with a CQ ID.
  */
-static void *irdma_sc_process_ceq_ex(struct irdma_sc_dev *dev,
-					struct irdma_sc_ceq *ceq)
+bool irdma_sc_process_ceq(struct irdma_sc_dev *dev,
+			  struct irdma_sc_ceq *ceq, u32 *cq_idx)
 {
+	struct irdma_sc_cq *cq = NULL;
 	u64 temp;
 	__le64 *ceqe;
 	u8 polarity;
-	u32 cq_idx;
-	void *cq = NULL;
+	unsigned long flags;
 
 	do {
 		ceqe = IRDMA_GET_CURRENT_CEQ_ELEM(ceq);
 		get_64bit_val(ceqe, 0, &temp);
 		polarity = (u8)FIELD_GET(IRDMA_CEQE_VALID, temp);
 		if (polarity != ceq->polarity)
-			return NULL;
+			return false;
 
-		cq_idx = temp;
+		/* Truncate to 32-bit uint and discard CEQE_Valid bit
+		 * which is MSB of temp.
+		 */
+		*cq_idx = (u32)temp;
 
-		if (cq_idx >=
-		    (dev->hmc_info->hmc_obj[IRDMA_HMC_IW_CQ].max_cnt - 1)) {
-			/* Scrubbed CEQEs are set to INVALID, so that's okay. */
-			if (cq_idx != IRDMA_INVALID_CQ_IDX)
-				ibdev_dbg(to_ibdev(dev),
-					  "CQP: irdma: Received invalid CQ IDX %u in ISR\n",
-					  cq_idx);
-			cq_idx = IRDMA_INVALID_CQ_IDX;
+		if (*cq_idx >= dev->hmc_info->hmc_obj[IRDMA_HMC_IW_CQ].cnt) {
+			*cq_idx = IRDMA_INVALID_CQ_IDX;
 		} else {
-			cq = READ_ONCE(dev->cq_table[cq_idx]);
+			if (*cq_idx == IRDMA_RSVD_CQ_ID_CQP) {
+				cq = READ_ONCE(dev->cq_table[*cq_idx]);
+			} else if (*cq_idx == IRDMA_RSVD_CQ_ID_ILQ ||
+				   *cq_idx == IRDMA_RSVD_CQ_ID_IEQ) {
+				spin_lock_irqsave(&dev->puda_cq_lock, flags);
+				cq = (*cq_idx == IRDMA_RSVD_CQ_ID_ILQ) ?
+					dev->ilq_cq : dev->ieq_cq;
+				spin_unlock_irqrestore(&dev->puda_cq_lock, flags);
+			} else {
+				cq = READ_ONCE(dev->cq_table[*cq_idx]);
+			}
+
 			if (!cq) {
 				ibdev_dbg(to_ibdev(dev),
 					  "CQP: irdma: Skipping stale CEQE for CQ. ID %u\n",
-					  cq_idx);
-				cq_idx = IRDMA_INVALID_CQ_IDX;
+					  *cq_idx);
+				*cq_idx = IRDMA_INVALID_CQ_IDX;
 			}
 		}
 
 		IRDMA_RING_MOVE_TAIL(ceq->ceq_ring);
 		if (!IRDMA_RING_CURRENT_TAIL(ceq->ceq_ring))
 			ceq->polarity ^= 1;
-	} while (cq_idx == IRDMA_INVALID_CQ_IDX);
+	} while (*cq_idx == IRDMA_INVALID_CQ_IDX);
 
-	return cq;
-}
-
-/**
- * irdma_sc_process_ceq - process ceq
- * @dev: sc device struct
- * @ceq: ceq sc structure
- *
- * It is expected caller serializes this function with cleanup_ceqes()
- * because these functions manipulate the same ceq
- */
-void *irdma_sc_process_ceq(struct irdma_sc_dev *dev, struct irdma_sc_ceq *ceq)
-{
-	u64 temp;
-	__le64 *ceqe;
-	struct irdma_sc_cq *cq = NULL;
-	struct irdma_sc_cq *temp_cq;
-	u8 polarity;
-	u32 cq_idx;
-
-	if (dev->hw_wa & DEFUNCT_CQ_WA)
-		return irdma_sc_process_ceq_ex(dev, ceq);
-
-	do {
-		cq_idx = 0;
-		ceqe = IRDMA_GET_CURRENT_CEQ_ELEM(ceq);
-		get_64bit_val(ceqe, 0, &temp);
-		polarity = (u8)FIELD_GET(IRDMA_CEQE_VALID, temp);
-		if (polarity != ceq->polarity)
-			return NULL;
-
-		temp_cq = (struct irdma_sc_cq *)(unsigned long)LS_64_1(temp, 1);
-		if (!temp_cq) {
-			cq_idx = IRDMA_INVALID_CQ_IDX;
-			IRDMA_RING_MOVE_TAIL(ceq->ceq_ring);
-
-			if (!IRDMA_RING_CURRENT_TAIL(ceq->ceq_ring))
-				ceq->polarity ^= 1;
-			continue;
-		}
-
-		cq = temp_cq;
-		IRDMA_RING_MOVE_TAIL(ceq->ceq_ring);
-		if (!IRDMA_RING_CURRENT_TAIL(ceq->ceq_ring))
-			ceq->polarity ^= 1;
-	} while (cq_idx == IRDMA_INVALID_CQ_IDX);
-
-	if (cq)
-		irdma_sc_cq_ack(cq);
-	return cq;
+	return true;
 }
 
 /**
@@ -5301,14 +5295,13 @@ void *irdma_sc_process_ceq(struct irdma_sc_dev *dev, struct irdma_sc_ceq *ceq)
  */
 void irdma_sc_cleanup_ceqes(struct irdma_sc_cq *cq, struct irdma_sc_ceq *ceq)
 {
-	struct irdma_sc_cq *next_cq;
 	u8 ceq_polarity = ceq->polarity;
 	__le64 *ceqe;
 	u8 polarity;
 	u64 temp;
 	int next;
+	u32 cq_idx;
 	u32 i;
-	u32 cq_id;
 
 	next = IRDMA_RING_GET_NEXT_TAIL(ceq->ceq_ring, 0);
 
@@ -5320,18 +5313,11 @@ void irdma_sc_cleanup_ceqes(struct irdma_sc_cq *cq, struct irdma_sc_ceq *ceq)
 		if (polarity != ceq_polarity)
 			return;
 
-		if (ceq->dev->hw_wa & DEFUNCT_CQ_WA) {
-			cq_id = temp;
-			if (cq_id == cq->cq_uk.cq_id)
-				set_64bit_val(ceqe, 0,
-					      (temp & IRDMA_CEQE_VALID) |
-					      IRDMA_INVALID_CQ_IDX);
-		} else {
-			next_cq = (struct irdma_sc_cq *)(unsigned long)LS_64_1(temp, 1);
-			if (cq == next_cq)
-				set_64bit_val(ceqe, 0, temp & IRDMA_CEQE_VALID);
-		}
-
+		cq_idx = (u32)temp;
+		if (cq_idx == cq->cq_uk.cq_id)
+			set_64bit_val(ceqe, 0,
+				      (temp & IRDMA_CEQE_VALID) |
+				      IRDMA_INVALID_CQ_IDX);
 		next = IRDMA_RING_GET_NEXT_TAIL(ceq->ceq_ring, i);
 		if (!next)
 			ceq_polarity ^= 1;
@@ -5781,7 +5767,6 @@ int irdma_sc_ccq_destroy(struct irdma_sc_cq *ccq, u64 scratch, bool post_sq)
 		return -ENOMEM;
 
 	set_64bit_val(wqe, 0, ccq->cq_uk.cq_size);
-	set_64bit_val(wqe, 8, RS_64_1(ccq, 1));
 	set_64bit_val(wqe, 40, ccq->shadow_area_pa);
 
 	if (dev->hw_wa & NO_CEQMASK)
@@ -6372,7 +6357,7 @@ int irdma_get_rdma_features(struct irdma_sc_dev *dev)
 
 	for (feat_idx = 0; feat_idx < feat_cnt; feat_idx++) {
 		get_64bit_val(feat_buf.va, feat_idx * 8, &temp);
-		feat_type = FIELD_GET(IRDMA_FEATURE_TYPE, temp);
+		feat_type = (u8)FIELD_GET(IRDMA_FEATURE_TYPE, temp);
 
 		if (feat_type >= IRDMA_MAX_FEATURES) {
 			ibdev_dbg(to_ibdev(dev),
@@ -6461,7 +6446,7 @@ static void cfg_fpm_value_gen_2(struct irdma_sc_dev *dev,
 	struct irdma_hmc_fpm_misc *hmc_fpm_misc = &dev->hmc_fpm_misc;
 
 	hmc_info->hmc_obj[IRDMA_HMC_IW_XF].cnt =
-		4 * hmc_fpm_misc->xf_block_size * qpwanted;
+		IRDMA_HMC_XF_SIZE_MULTIPLIER * qpwanted;
 
 	hmc_info->hmc_obj[IRDMA_HMC_IW_HDR].cnt = qpwanted;
 
@@ -7548,6 +7533,9 @@ int irdma_sc_dev_init(struct irdma_sc_dev *dev, struct irdma_device_init_info *i
 	int ret_code = 0;
 	u8 db_size;
 
+	spin_lock_init(&dev->puda_cq_lock);
+	dev->ilq_cq = NULL;
+	dev->ieq_cq = NULL;
 	INIT_LIST_HEAD(&dev->cqp_cmd_head); /* for CQP command backlog */
 	mutex_init(&dev->ws_mutex);
 	dev->hmc_fn_id = info->hmc_fn_id;
@@ -7721,11 +7709,9 @@ void mev_enable_hw_wa(struct irdma_sc_dev *dev, u64 hw_wa,
 			      CQ_NO_CHECKFLOW;
 		break;
 	case MEV_C0_45:
-		dev->hw_wa |= DEFUNCT_CQ_WA;
 		break;
 	case MMG_DEV_00:
 		dev->hw_wa |= REDUCE_ORD_IRD |
-			      DEFUNCT_CQ_WA |
 			      MMG_WA;
 		break;
 	case MEV_B0_37:

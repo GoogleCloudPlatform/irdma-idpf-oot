@@ -128,6 +128,11 @@ int idpf_queue_reg_init(struct idpf_vport *vport, struct idpf_q_grp *q_grp,
 			struct virtchnl2_queue_reg_chunks *chunks);
 int idpf_vport_queue_ids_init(struct idpf_q_grp *q_grp,
 			      struct virtchnl2_queue_reg_chunks *chunks);
+bool idpf_vport_is_cap_ena(struct idpf_vport *vport, u16 flag);
+bool idpf_sideband_flow_type_ena(struct idpf_vport *vport, u32 flow_type);
+bool idpf_sideband_action_ena(struct idpf_vport *vport,
+			      struct ethtool_rx_flow_spec *fsp);
+unsigned int idpf_fsteer_max_rules(struct idpf_vport *vport);
 int idpf_recv_mb_msg(struct idpf_adapter *adapter);
 int idpf_send_mb_msg(struct idpf_adapter *adapter, u32 op,
 		     u16 msg_size, u8 *msg, u16 cookie);
@@ -168,6 +173,9 @@ int idpf_send_map_unmap_queue_vector_msg(struct idpf_vport *vport,
 int idpf_add_del_mac_filters(struct idpf_vport *vport,
 			     struct idpf_netdev_priv *np,
 			     bool add, bool async);
+int idpf_add_del_fsteer_filters(struct idpf_adapter *adapter,
+				struct virtchnl2_flow_rule_add_del *rule,
+				enum virtchnl2_op opcode);
 int idpf_set_promiscuous(struct idpf_adapter *adapter,
 			 struct idpf_vport_user_config_data *config_data,
 			 u32 vport_id);
@@ -183,8 +191,14 @@ int idpf_send_get_set_rss_lut_msg(struct idpf_vport *vport,
 				  struct idpf_rss_data *rss_data,
 				  bool get);
 void idpf_vc_xn_shutdown(struct idpf_vc_xn_manager *vcxn_mngr);
+int idpf_idc_rdma_vc_send_sync(struct iidc_rdma_core_dev_info *cdev_info,
+			       u8 *send_msg, u16 msg_size,
+			       u8 *recv_msg, u16 *recv_len);
 int idpf_send_get_set_rss_hash_msg(struct idpf_vport *vport, bool get);
 int idpf_set_vlan_features(struct idpf_vport *vport, netdev_features_t features);
+#ifdef CONFIG_UPLINK_PORT_STATS
+int idpf_send_get_port_stats_msg(struct idpf_vport *vport);
+#endif /* CONFIG_UPLINK_PORT_STATS */
 int idpf_send_create_adi_msg(struct idpf_adapter *adapter,
 			     struct virtchnl2_non_flex_create_adi *vchnl_adi);
 int idpf_send_destroy_adi_msg(struct idpf_adapter *adapter,

@@ -224,7 +224,6 @@ void icrdma_init_hw(struct irdma_sc_dev *dev)
 	dev->hw_attrs.max_stat_inst = ICRDMA_MAX_STATS_COUNT;
 	dev->hw_attrs.max_stat_idx = IRDMA_HW_STAT_INDEX_MAX_GEN_2;
 	dev->hw_attrs.max_hw_device_pages = ICRDMA_MAX_PUSH_PAGE_COUNT;
-
 	dev->hw_attrs.uk_attrs.max_hw_wq_frags = ICRDMA_MAX_WQ_FRAGMENT_COUNT;
 	dev->hw_attrs.uk_attrs.max_hw_read_sges = ICRDMA_MAX_SGE_RD;
 	dev->hw_attrs.uk_attrs.min_hw_wq_size = ICRDMA_MIN_WQ_SIZE;
@@ -255,6 +254,8 @@ static bool irdma_is_lfc_set(struct irdma_config_check *cc, struct irdma_sc_vsi 
 	if (irdma_fw_major_ver(vsi->dev) == 1) {
 		rx_pause_enable = PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE_0;
 		tx_pause_enable = PRTMAC_HSEC_CTL_TX_PAUSE_ENABLE_0;
+		lfc &= rd32(vsi->dev->hw,
+		    PRTMAC_HSEC_CTL_RX_ENABLE_GPP_0 + 4 * vsi->dev->hmc_fn_id);
 	} else {
 		rx_pause_enable = CNV_PRTMAC_HSEC_CTL_RX_PAUSE_ENABLE_0;
 		tx_pause_enable = CNV_PRTMAC_HSEC_CTL_TX_PAUSE_ENABLE_0;
@@ -265,8 +266,7 @@ static bool irdma_is_lfc_set(struct irdma_config_check *cc, struct irdma_sc_vsi 
 	lfc &= FIELD_GET(LFC_ENABLE, temp);
 	temp = rd32(vsi->dev->hw, tx_pause_enable + 4 * fn_id);
 	lfc &= FIELD_GET(LFC_ENABLE, temp);
-	lfc &= rd32(vsi->dev->hw,
-		    PRTMAC_HSEC_CTL_RX_ENABLE_GPP_0 + 4 * vsi->dev->hmc_fn_id);
+
 	if (lfc)
 		return true;
 	return false;
@@ -311,6 +311,9 @@ static bool irdma_is_pfc_set(struct irdma_config_check *cc, struct irdma_sc_vsi 
 
 bool irdma_is_config_ok(struct irdma_config_check *cc, struct irdma_sc_vsi *vsi)
 {
+	if (irdma_fw_major_ver(vsi->dev) != 1)
+		return true;
+
 	cc->lfc_set = irdma_is_lfc_set(cc, vsi);
 	cc->pfc_set = irdma_is_pfc_set(cc, vsi);
 

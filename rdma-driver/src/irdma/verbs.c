@@ -868,6 +868,8 @@ void irdma_roce_fill_and_set_qpctx_info(struct irdma_qp *iwqp,
 	roce_info = &iwqp->roce_info;
 	ether_addr_copy(roce_info->mac_addr, iwdev->netdev->dev_addr);
 
+	if (iwqp->ibqp.qp_type == IB_QPT_GSI && iwqp->ibqp.qp_num != 1)
+		roce_info->is_qp1 = true;
 	roce_info->rd_en = true;
 	roce_info->wr_rdresp_en = true;
 	if (dev->hw_attrs.uk_attrs.hw_rev >= IRDMA_GEN_3)
@@ -1397,6 +1399,21 @@ int irdma_modify_qp_roce(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 				iwdev->rf->check_fc(&iwdev->vsi, &iwqp->sc_qp);
 			udp_info->cwnd = iwdev->roce_cwnd;
 			roce_info->ack_credits = iwdev->roce_ackcreds;
+			/* Track RoCE RTS QP count for rtomin threshold */
+			if (irdma_is_e830(&iwdev->rf->sc_dev) && !iwqp->roce_rts_cnt_incr) {
+				int qp_cnt;
+
+				iwqp->roce_rts_cnt_incr = true;
+				qp_cnt = atomic_inc_return(&iwdev->rf->roce_rts_qp_cnt);
+				/* Adjust rtomin based on number of RoCE RTS QPs */
+				if (iwdev->rf->rtomin_qp_cnt_thresh &&
+				    !iwdev->override_rtomin) {
+					if (qp_cnt > iwdev->rf->rtomin_qp_cnt_thresh)
+						roce_info->rtomin = iwdev->rf->roce_rtomin_hi;
+					else
+						roce_info->rtomin = iwdev->rf->roce_rtomin_lo;
+				}
+			}
 			if (iwdev->push_mode && udata &&
 			    iwqp->sc_qp.push_idx == IRDMA_INVALID_PUSH_PAGE_INDEX) {
 				spin_unlock_irqrestore(&iwqp->lock, flags);
@@ -1416,11 +1433,22 @@ int irdma_modify_qp_roce(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 			info.next_iwarp_state = IRDMA_QP_STATE_SQD;
 			issue_modify_qp = 1;
 			iwqp->suspend_pending = true;
+			/* Decrement RoCE RTS QP count when leaving RTS */
+			if (irdma_is_e830(&iwdev->rf->sc_dev) && iwqp->roce_rts_cnt_incr) {
+				iwqp->roce_rts_cnt_incr = false;
+				atomic_dec(&iwdev->rf->roce_rts_qp_cnt);
+			}
 			break;
 		case IB_QPS_SQE:
 		case IB_QPS_ERR:
 		case IB_QPS_RESET:
+			/* Decrement RoCE RTS QP count when leaving RTS */
+			if (irdma_is_e830(&iwdev->rf->sc_dev) && iwqp->roce_rts_cnt_incr) {
+				iwqp->roce_rts_cnt_incr = false;
+				atomic_dec(&iwdev->rf->roce_rts_qp_cnt);
+			}
 			if (iwqp->iwarp_state == IRDMA_QP_STATE_ERROR) {
+				iwqp->ibqp_state = attr->qp_state;
 				spin_unlock_irqrestore(&iwqp->lock, flags);
 				if (udata && udata->inlen) {
 					if (iwdev->rf->sc_dev.periodic_flush)
@@ -1633,6 +1661,7 @@ int irdma_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask,
 		case IB_QPS_ERR:
 		case IB_QPS_RESET:
 			if (iwqp->iwarp_state == IRDMA_QP_STATE_ERROR) {
+				iwqp->ibqp_state = attr->qp_state;
 				spin_unlock_irqrestore(&iwqp->lock, flags);
 				if (udata && udata->inlen) {
 					if (ib_copy_from_udata(&ureq, udata,
@@ -1718,7 +1747,7 @@ int irdma_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask,
 			spin_lock_irqsave(&iwdev->cm_core.ht_lock, flags);
 
 			if (iwqp->cm_node) {
-				refcount_inc(&iwqp->cm_node->refcnt);
+				irdma_add_ref_cmnode(iwqp->cm_node);
 				spin_unlock_irqrestore(&iwdev->cm_core.ht_lock, flags);
 				close_timer_started = atomic_inc_return(&iwqp->close_timer_started);
 				if (iwqp->cm_id && close_timer_started == 1)
@@ -1726,7 +1755,7 @@ int irdma_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr, int attr_mask,
 						(struct irdma_puda_buf *)iwqp,
 						IRDMA_TIMER_TYPE_CLOSE, 1, 0);
 
-				irdma_rem_ref_cm_node(iwqp->cm_node);
+				irdma_rem_ref_cmnode(iwqp->cm_node);
 			} else {
 				spin_unlock_irqrestore(&iwdev->cm_core.ht_lock, flags);
 			}
@@ -2690,6 +2719,7 @@ int irdma_hw_alloc_mw(struct irdma_device *iwdev, struct irdma_mr *iwmr)
 
 	info->page_size = PAGE_SIZE;
 	info->mw_stag_index = iwmr->stag >> IRDMA_CQPSQ_STAG_IDX_S;
+	info->print_cmd = iwmr->stag != iwdev->rf->chk_stag;
 	info->pd_id = iwpd->sc_pd.pd_id;
 	info->remote_access = true;
 	cqp_info->cqp_cmd = IRDMA_OP_MW_ALLOC;
@@ -2725,6 +2755,7 @@ static int irdma_dealloc_mw(struct ib_mw *ibmw)
 	info = &cqp_info->in.u.dealloc_stag.info;
 	info->pd_id = iwpd->sc_pd.pd_id;
 	info->stag_idx = RS_64_1(ibmw->rkey, IRDMA_CQPSQ_STAG_IDX_S);
+	info->print_cmd = ibmw->rkey != iwdev->rf->chk_stag;
 	info->mr = false;
 	cqp_info->cqp_cmd = IRDMA_OP_DEALLOC_STAG;
 	cqp_info->post_sq = 1;
@@ -3205,6 +3236,7 @@ int irdma_hwdereg_mr(struct ib_mr *ib_mr)
 	info = &cqp_info->in.u.dealloc_stag.info;
 	info->pd_id = iwpd->sc_pd.pd_id;
 	info->stag_idx = RS_64_1(ib_mr->rkey, IRDMA_CQPSQ_STAG_IDX_S);
+	info->print_cmd = ib_mr->rkey != iwdev->rf->chk_stag;
 	info->mr = true;
 	if (iwmr->type != IRDMA_MEMREG_TYPE_MEM)
 		info->skip_flush_markers = true;
@@ -3777,9 +3809,6 @@ static void irdma_process_cqe(struct ib_wc *entry,
 			      struct irdma_cq_poll_info *cq_poll_info)
 {
 	struct irdma_sc_qp *qp;
-#ifdef CONFIG_DEBUG_FS
-	struct irdma_device *iwdev;
-#endif
 
 	entry->wc_flags = 0;
 	entry->pkey_index = 0;
@@ -3787,29 +3816,14 @@ static void irdma_process_cqe(struct ib_wc *entry,
 
 	qp = cq_poll_info->qp_handle;
 	entry->qp = qp->qp_uk.back_qp;
-#ifdef CONFIG_DEBUG_FS
-	iwdev = to_iwdev(to_ibdev(qp->dev));
-#endif
 
 	if (cq_poll_info->error) {
-#ifdef CONFIG_DEBUG_FS
-		if (entry->qp->qp_type == IB_QPT_GSI)
-			iwdev->mad_qp_completed_error_wrs++;
-#endif
 		entry->status = (cq_poll_info->comp_status == IRDMA_COMPL_STATUS_FLUSHED) ?
 				irdma_flush_err_to_ib_wc_status(cq_poll_info->minor_err) : IB_WC_GENERAL_ERR;
 
 		entry->vendor_err = cq_poll_info->major_err << 16 |
 				    cq_poll_info->minor_err;
 	} else {
-#ifdef CONFIG_DEBUG_FS
-		if (entry->qp->qp_type == IB_QPT_GSI) {
-			if (cq_poll_info->q_type == IRDMA_CQE_QTYPE_SQ)
-				iwdev->mad_qp_completed_send_wrs++;
-			else
-				iwdev->mad_qp_completed_recv_wrs++;
-		}
-#endif
 		entry->status = IB_WC_SUCCESS;
 		if (cq_poll_info->imm_valid) {
 			entry->ex.imm_data = htonl(cq_poll_info->imm_data);

@@ -162,7 +162,8 @@ enum irdma_vers {
 	IRDMA_GEN_2 = 2,
 	IRDMA_GEN_3 = 3,
 	IRDMA_GEN_4 = 4,
-	IRDMA_GEN_MAX = IRDMA_GEN_4,
+	IRDMA_GEN_NEXT,
+	IRDMA_GEN_MAX = IRDMA_GEN_NEXT - 1,
 };
 
 struct irdma_uk_attrs {

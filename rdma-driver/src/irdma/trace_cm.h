@@ -355,7 +355,7 @@ DEFINE_EVENT(cm_node_template, irdma_send_reset,
 		      enum irdma_cm_event_type type, void *caller),
 	     TP_ARGS(cm_node, type, caller));
 
-DEFINE_EVENT(cm_node_template, irdma_rem_ref_cm_node,
+DEFINE_EVENT(cm_node_template, irdma_rem_ref_cmnode,
 	     TP_PROTO(struct irdma_cm_node *cm_node,
 		      enum irdma_cm_event_type type, void *caller),
 	     TP_ARGS(cm_node, type, caller));

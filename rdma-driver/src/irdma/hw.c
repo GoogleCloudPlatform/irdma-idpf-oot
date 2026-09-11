@@ -76,6 +76,73 @@ static void irdma_puda_ce_handler(struct irdma_pci_f *rf,
 }
 
 /**
+ * irdma_process_normal_ceqe - Handle a CEQE for a normal CQ
+ * @rf: RDMA PCI function
+ * @dev: iWARP device
+ * @cq_idx: CQ ID. Must be in table bounds.
+ *
+ * Context: Atomic (CEQ lock must be held)
+ */
+static void irdma_process_normal_ceqe(struct irdma_pci_f *rf,
+				      struct irdma_sc_dev *dev, u32 cq_idx)
+{
+	/* cq_idx bounds validated in irdma_sc_process_ceq */
+	struct irdma_cq *iwcq = READ_ONCE(rf->cq_table[cq_idx]);
+	struct irdma_sc_cq *cq;
+
+	if (unlikely(!iwcq)) {
+		/* Should not happen since CEQ is scrubbed upon CQ delete */
+		ibdev_warn(to_ibdev(dev), "Stale CEQE for CQ %u", cq_idx);
+		return;
+	}
+
+	cq = &iwcq->sc_cq;
+
+	if (unlikely(cq->cq_type != IRDMA_CQ_TYPE_IWARP)) {
+		ibdev_warn(to_ibdev(dev), "Unexpected CQ type %u", cq->cq_type);
+		return;
+	}
+
+	irdma_sc_cq_ack(cq);
+	irdma_iwarp_ce_handler(cq);
+}
+
+/**
+ * irdma_process_reserved_ceqe - Handle a CEQE for a reserved CQ
+ * @rf: RDMA PCI function
+ * @dev: iWARP device
+ * @cq_idx: CQ ID
+ *
+ * Context: Atomic
+ */
+static void irdma_process_reserved_ceqe(struct irdma_pci_f *rf,
+					struct irdma_sc_dev *dev, u32 cq_idx)
+{
+	struct irdma_sc_cq *cq;
+	unsigned long flags;
+
+	if (cq_idx == IRDMA_RSVD_CQ_ID_CQP) {
+		cq = &rf->ccq.sc_cq;
+		/* CQP CQ lifetime > CEQ. */
+		irdma_sc_cq_ack(cq);
+		queue_work(rf->cqp_cmpl_wq, &rf->cqp_cmpl_work);
+	} else if (cq_idx == IRDMA_RSVD_CQ_ID_ILQ ||
+		   cq_idx == IRDMA_RSVD_CQ_ID_IEQ) {
+		spin_lock_irqsave(&dev->puda_cq_lock, flags);
+		cq = (cq_idx == IRDMA_RSVD_CQ_ID_ILQ) ?
+			dev->ilq_cq : dev->ieq_cq;
+		if (!cq) {
+			ibdev_warn(to_ibdev(dev), "Stale ILQ/IEQ CEQE");
+			goto err;
+		}
+		irdma_sc_cq_ack(cq);
+		irdma_puda_ce_handler(rf, cq);
+err:
+		spin_unlock_irqrestore(&dev->puda_cq_lock, flags);
+	}
+}
+
+/**
  * irdma_process_ceq - handle ceq for completions
  * @rf: RDMA PCI function
  * @ceq: ceq having cq for completion
@@ -84,43 +151,27 @@ void irdma_process_ceq(struct irdma_pci_f *rf, struct irdma_ceq *ceq)
 {
 	struct irdma_sc_dev *dev = &rf->sc_dev;
 	struct irdma_sc_ceq *sc_ceq;
-	struct irdma_sc_cq *cq;
 	unsigned long flags;
-	void *temp_cq;
+	u32 cq_idx;
 
 	sc_ceq = &ceq->sc_ceq;
 	do {
 		spin_lock_irqsave(&ceq->ce_lock, flags);
 
-		temp_cq = irdma_sc_process_ceq(dev, sc_ceq);
-		if (!temp_cq || rf->reset) {
+		if (!irdma_sc_process_ceq(dev, sc_ceq, &cq_idx) || rf->reset) {
 			spin_unlock_irqrestore(&ceq->ce_lock, flags);
 			break;
 		}
 
-		if (dev->hw_wa & DEFUNCT_CQ_WA) {
-			if (temp_cq == &rf->ccq.sc_cq) {
-				cq = &rf->ccq.sc_cq;
-			} else {
-				struct irdma_cq *icq = temp_cq;
-
-				cq = &icq->sc_cq;
-			}
-			irdma_sc_cq_ack(cq);
-		} else {
-			cq = temp_cq;
+		if (likely(cq_idx > IRDMA_RSVD_CQ_ID_IEQ)) {
+			irdma_process_normal_ceqe(rf, dev, cq_idx);
+			spin_unlock_irqrestore(&ceq->ce_lock, flags);
+			continue;
 		}
-
-		if (cq->cq_type == IRDMA_CQ_TYPE_IWARP)
-			irdma_iwarp_ce_handler(cq);
 
 		spin_unlock_irqrestore(&ceq->ce_lock, flags);
 
-		if (cq->cq_type == IRDMA_CQ_TYPE_CQP)
-			queue_work(rf->cqp_cmpl_wq, &rf->cqp_cmpl_work);
-		else if (cq->cq_type == IRDMA_CQ_TYPE_ILQ ||
-			 cq->cq_type == IRDMA_CQ_TYPE_IEQ)
-			irdma_puda_ce_handler(rf, cq);
+		irdma_process_reserved_ceqe(rf, dev, cq_idx);
 	} while (1);
 }
 
@@ -227,6 +278,7 @@ bool irdma_process_aeq(struct irdma_pci_f *rf)
 		if (info->aeqe_overflow) {
 			ibdev_err(&iwdev->ibdev, "AEQ has overflowed\n");
 			rf->reset = true;
+			rf->irdma_initiated_reset = true;
 			rf->gen_ops.request_reset(rf);
 			return (aeqcnt > 0);
 		}
@@ -241,11 +293,18 @@ bool irdma_process_aeq(struct irdma_pci_f *rf)
 			  info->ae_src);
 
 		if (info->qp) {
+#ifdef HAVE_XARRAY
+			xa_lock_irqsave(&rf->qp_xa, flags);
+			iwqp = xa_load(&rf->qp_xa, info->qp_cq_id);
+			if (!iwqp) {
+				xa_unlock_irqrestore(&rf->qp_xa, flags);
+#else
 			spin_lock_irqsave(&rf->qptable_lock, flags);
 			iwqp = rf->qp_table[info->qp_cq_id];
 			if (!iwqp) {
 				spin_unlock_irqrestore(&rf->qptable_lock,
 						       flags);
+#endif /* HAVE_XARRAY */
 				if (info->ae_id == IRDMA_AE_QP_SUSPEND_COMPLETE) {
 					struct irdma_device *iwdev = rf->iwdev;
 
@@ -261,7 +320,11 @@ bool irdma_process_aeq(struct irdma_pci_f *rf)
 				continue;
 			}
 			irdma_qp_add_ref(&iwqp->ibqp);
+#ifdef HAVE_XARRAY
+			xa_unlock_irqrestore(&rf->qp_xa, flags);
+#else
 			spin_unlock_irqrestore(&rf->qptable_lock, flags);
+#endif /* HAVE_XARRAY */
 			qp = &iwqp->sc_qp;
 			spin_lock_irqsave(&iwqp->lock, flags);
 			iwqp->hw_tcp_state = info->tcp_state;
@@ -1668,8 +1731,8 @@ static int irdma_initialize_ilq(struct irdma_device *iwdev)
 	int status;
 
 	info.type = IRDMA_PUDA_RSRC_TYPE_ILQ;
-	info.cq_id = 1;
-	info.qp_id = 1;
+	info.cq_id = IRDMA_RSVD_CQ_ID_ILQ;
+	info.qp_id = IRDMA_RSVD_QP_ID_GSI_ILQ;
 	info.count = 1;
 	info.pd_id = 1;
 	info.abi_ver = IRDMA_ABI_VER;
@@ -1698,7 +1761,7 @@ static int irdma_initialize_ieq(struct irdma_device *iwdev)
 	int status;
 
 	info.type = IRDMA_PUDA_RSRC_TYPE_IEQ;
-	info.cq_id = 2;
+	info.cq_id = IRDMA_RSVD_CQ_ID_IEQ;
 	info.qp_id = iwdev->vsi.exception_lan_q;
 	info.count = 1;
 	info.pd_id = 2;
@@ -1726,6 +1789,7 @@ void irdma_reinitialize_ieq(struct irdma_sc_vsi *vsi)
 	irdma_puda_dele_rsrc(vsi, IRDMA_PUDA_RSRC_TYPE_IEQ, false);
 	if (irdma_initialize_ieq(iwdev)) {
 		iwdev->rf->reset = true;
+		rf->irdma_initiated_reset = true;
 		rf->gen_ops.request_reset(rf);
 	}
 }
@@ -1769,8 +1833,11 @@ static void irdma_del_init_mem(struct irdma_pci_f *rf)
 	dev->hmc_info->sd_table.sd_entry = NULL;
 	vfree(rf->mem_rsrc);
 	rf->mem_rsrc = NULL;
+#ifdef HAVE_XARRAY
+	xa_destroy(&rf->qp_xa);
+#endif
 	dma_free_coherent(rf->hw.device, rf->obj_mem.size, rf->obj_mem.va,
-		          rf->obj_mem.pa);
+			  rf->obj_mem.pa);
 	rf->obj_mem.va = NULL;
 	if (rf->rdma_ver != IRDMA_GEN_1) {
 		kfree(rf->allocated_ws_nodes);
@@ -1782,20 +1849,7 @@ static void irdma_del_init_mem(struct irdma_pci_f *rf)
 	rf->iw_msixtbl = NULL;
 	kfree(rf->hmc_info_mem);
 	rf->hmc_info_mem = NULL;
-	if (dev->hmc_fpm_misc.fw_scratch_buf0.va) {
-		dma_free_coherent(dev->hw->device,
-				  dev->hmc_fpm_misc.fw_scratch_buf0.size,
-				  dev->hmc_fpm_misc.fw_scratch_buf0.va,
-				  dev->hmc_fpm_misc.fw_scratch_buf0.pa);
-		dev->hmc_fpm_misc.fw_scratch_buf0.va = NULL;
-	}
-	if (dev->hmc_fpm_misc.fw_scratch_buf1.va) {
-		dma_free_coherent(dev->hw->device,
-				  dev->hmc_fpm_misc.fw_scratch_buf1.size,
-				  dev->hmc_fpm_misc.fw_scratch_buf1.va,
-				  dev->hmc_fpm_misc.fw_scratch_buf1.pa);
-		dev->hmc_fpm_misc.fw_scratch_buf1.va = NULL;
-	}
+	irdma_sc_fw_scratch_buf_free(dev);
 }
 /**
  * irdma_initialize_dev - initialize device
@@ -1891,7 +1945,7 @@ void irdma_rt_deinit_hw(struct irdma_device *iwdev)
 	case REM_ENDPOINT_TRK_CREATED:
 		if (iwdev->rf->en_rem_endpoint_trk) {
 			qp.dev = &iwdev->rf->sc_dev;
-			qp.qp_uk.qp_id = IRDMA_REM_ENDPOINT_TRK_QPID;
+			qp.qp_uk.qp_id = IRDMA_RSVD_QP_ID_REM_ENDPOINT_TRK;
 			qp.qp_uk.qp_type = IRDMA_QP_TYPE_IWARP;
 			irdma_cqp_qp_destroy_cmd(qp.dev, &qp);
 		}
@@ -2045,7 +2099,7 @@ int irdma_rt_init_hw(struct irdma_device *iwdev,
 
 	vsi_info.register_qset = rf->gen_ops.register_qset;
 	vsi_info.unregister_qset = rf->gen_ops.unregister_qset;
-	vsi_info.exception_lan_q = 2;
+	vsi_info.exception_lan_q = IRDMA_RSVD_QP_ID_IEQ;
 	irdma_sc_vsi_init(&iwdev->vsi, &vsi_info);
 
 	status = irdma_setup_cm_core(iwdev, rf->rdma_ver);
@@ -2078,7 +2132,7 @@ int irdma_rt_init_hw(struct irdma_device *iwdev,
 		}
 		if (iwdev->rf->en_rem_endpoint_trk) {
 			qp.dev = dev;
-			qp.qp_uk.qp_id = IRDMA_REM_ENDPOINT_TRK_QPID;
+			qp.qp_uk.qp_id = IRDMA_RSVD_QP_ID_REM_ENDPOINT_TRK;
 			qp.qp_uk.qp_type = IRDMA_QP_TYPE_IWARP;
 			status = irdma_cqp_qp_create_cmd(dev, &qp);
 			if (status)
@@ -2225,18 +2279,24 @@ static void irdma_set_hw_rsrc(struct irdma_pci_f *rf)
 	rf->allocated_mcgs = &rf->allocated_ahs[BITS_TO_LONGS(rf->max_ah)];
 	rf->allocated_arps = &rf->allocated_mcgs[BITS_TO_LONGS(rf->max_mcg)];
 
+#ifdef HAVE_XARRAY
+	rf->cq_table = (struct irdma_cq **)
+		(&rf->allocated_arps[BITS_TO_LONGS(rf->arp_table_size)]);
+	xa_init_flags(&rf->qp_xa, XA_FLAGS_LOCK_IRQ);
+#else
 	rf->qp_table = (struct irdma_qp **)
 		(&rf->allocated_arps[BITS_TO_LONGS(rf->arp_table_size)]);
 	rf->cq_table = (struct irdma_cq **)(&rf->qp_table[rf->max_qp]);
-	if (rf->sc_dev.hw_wa & DEFUNCT_CQ_WA) {
-		rf->sc_dev.cq_table = (void **)rf->cq_table;
-		rf->sc_dev.cq_table[0] = &rf->ccq.sc_cq;
-	}
+#endif /* HAVE_XARRAY */
+	rf->sc_dev.cq_table = (void **)rf->cq_table;
+	rf->sc_dev.cq_table[0] = &rf->ccq.sc_cq;
 	rf->srq_table = (struct irdma_srq **)(&rf->cq_table[rf->max_cq]);
 
 	spin_lock_init(&rf->rsrc_lock);
 	spin_lock_init(&rf->arp_lock);
+#ifndef HAVE_XARRAY
 	spin_lock_init(&rf->qptable_lock);
+#endif
 	spin_lock_init(&rf->cqtable_lock);
 	spin_lock_init(&rf->srqtable_lock);
 	spin_lock_init(&rf->qh_list_lock);
@@ -2259,7 +2319,9 @@ static u32 irdma_calc_mem_rsrc_size(struct irdma_pci_f *rf)
 	rsrc_size += sizeof(unsigned long) * BITS_TO_LONGS(rf->arp_table_size);
 	rsrc_size += sizeof(unsigned long) * BITS_TO_LONGS(rf->max_ah);
 	rsrc_size += sizeof(unsigned long) * BITS_TO_LONGS(rf->max_mcg);
+#ifndef HAVE_XARRAY
 	rsrc_size += sizeof(struct irdma_qp **) * rf->max_qp;
+#endif
 	rsrc_size += sizeof(struct irdma_cq **) * rf->max_cq;
 	rsrc_size += sizeof(struct irdma_srq **) * rf->max_srq;
 
@@ -2310,27 +2372,30 @@ u32 irdma_initialize_hw_rsrc(struct irdma_pci_f *rf)
 	set_bit(0, rf->allocated_mrs);
 	if (rf->sc_dev.hw_wa & NO_STAG0)
 		set_bit(1, rf->allocated_mrs);
-	set_bit(0, rf->allocated_qps);
-	set_bit(0, rf->allocated_cqs);
+	set_bit(IRDMA_RSVD_QP_ID_0, rf->allocated_qps);
+	set_bit(IRDMA_RSVD_CQ_ID_CQP, rf->allocated_cqs);
 	set_bit(0, rf->allocated_srqs);
 	set_bit(0, rf->allocated_pds);
 	set_bit(0, rf->allocated_arps);
 	set_bit(0, rf->allocated_ahs);
 	set_bit(0, rf->allocated_mcgs);
-	set_bit(2, rf->allocated_qps); /* qp 2 IEQ */
-	set_bit(1, rf->allocated_qps); /* qp 1 ILQ */
-	set_bit(IRDMA_REM_ENDPOINT_TRK_QPID, rf->allocated_qps); /* qp 3 Remote Endpt trk */
-	set_bit(1, rf->allocated_cqs);
+	set_bit(IRDMA_RSVD_QP_ID_IEQ, rf->allocated_qps);
+	set_bit(IRDMA_RSVD_QP_ID_GSI_ILQ, rf->allocated_qps);
+	set_bit(IRDMA_RSVD_QP_ID_REM_ENDPOINT_TRK, rf->allocated_qps);
+	set_bit(IRDMA_RSVD_CQ_ID_ILQ, rf->allocated_cqs);
 	set_bit(1, rf->allocated_pds);
-	set_bit(2, rf->allocated_cqs);
+	set_bit(IRDMA_RSVD_CQ_ID_IEQ, rf->allocated_cqs);
 	set_bit(2, rf->allocated_pds);
 
 	INIT_LIST_HEAD(&rf->mc_qht_list.list);
-	/* stag index mask has a minimum of 14 bits */
-	mrdrvbits = 24 - max(get_count_order(rf->max_mr), 14);
-	/* stag index mask has a minimum of 16 bits for MMG */
-	if (rf->rdma_ver >= IRDMA_GEN_4)
+	if (rf->rdma_ver >= IRDMA_GEN_4) {
+		/* stag index mask has a minimum of 16 bits for MMG+ */
 		mrdrvbits = 24 - max(get_count_order(rf->max_mr), 16);
+	} else {
+		/* stag index mask has a minimum of 14 bits */
+		mrdrvbits = 24 - max(get_count_order(rf->max_mr), 14);
+	}
+
 	rf->mr_stagmask = ~(((1 << mrdrvbits) - 1) << (32 - mrdrvbits));
 
 	return 0;
@@ -2404,8 +2469,9 @@ void irdma_cqp_ce_handler_rca(struct irdma_pci_f *rf, struct irdma_sc_cq *cq,
 		return;
 	}
 
-	execute = (iwdev->rca_config & IRDMA_RCA_CFG_EXECUTE) != 0;
-	pending = (iwdev->rca_config & IRDMA_RCA_CFG_PENDING) != 0;
+	execute = (rf->rca_config & IRDMA_RCA_CFG_EXECUTE) != 0;
+	pending |= (rf->rca_config & IRDMA_RCA_CFG_PENDING) != 0;
+	pending &= (rf->rca_config & IRDMA_RCA_CFG_NO_PENDING) == 0;
 
 	print_hex_dump_debug("CQP: FORWARDED CQP WQE ",
 			     DUMP_PREFIX_OFFSET, 16, 8,
@@ -2931,7 +2997,7 @@ static void irdma_send_syn_cqp_callback(struct irdma_cqp_request *cqp_request)
 	struct irdma_cm_node *cm_node = cqp_request->param;
 
 	irdma_send_syn(cm_node, 1);
-	irdma_rem_ref_cm_node(cm_node);
+	irdma_rem_ref_cmnode(cm_node);
 }
 
 /**
@@ -3016,7 +3082,7 @@ int irdma_manage_qhash(struct irdma_device *iwdev, struct irdma_cm_info *cminfo,
 		cqp_request->callback_fcn = irdma_send_syn_cqp_callback;
 		cqp_request->param = cmnode;
 		if (!wait)
-			refcount_inc(&cm_node->refcnt);
+			irdma_add_ref_cmnode(cm_node);
 	}
 	if (info->ipv4_valid)
 		ibdev_dbg(&iwdev->ibdev,
@@ -3039,7 +3105,7 @@ int irdma_manage_qhash(struct irdma_device *iwdev, struct irdma_cm_info *cminfo,
 	cqp_info->in.u.manage_qhash_table_entry.scratch = (uintptr_t)cqp_request;
 	status = irdma_handle_cqp_op(iwdev->rf, cqp_request);
 	if (status && cm_node && !wait)
-		irdma_rem_ref_cm_node(cm_node);
+		irdma_rem_ref_cmnode(cm_node);
 
 	irdma_put_cqp_request(iwcqp, cqp_request);
 

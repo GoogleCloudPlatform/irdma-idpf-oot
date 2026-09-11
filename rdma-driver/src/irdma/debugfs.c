@@ -161,7 +161,11 @@ static int find_next_qp_num(struct irdma_pci_f *rf, int qp_id)
 					   rf->max_qp, qp_id);
 		if (qp_id < 0)
 			break;
+#ifdef HAVE_XARRAY
+	} while (!xa_load(&rf->qp_xa, qp_id));
+#else
 	} while (!rf->qp_table[qp_id]);
+#endif /* HAVE_XARRAY */
 
 	return qp_id;
 }
@@ -522,7 +526,11 @@ static void dump_qp(struct irdma_pci_f *rf, u32 qp_id, u32 subtype)
 
 	if (subtype != QP_CHIP_RAW) {
 		if ((qp_id >= 2) && (qp_id < rf->max_qp))
+#ifdef HAVE_XARRAY
+			iwqp = xa_load(&rf->qp_xa, qp_id);
+#else
 			iwqp = rf->qp_table[qp_id];
+#endif /* HAVE_XARRAY */
 
 		if (!iwqp) {
 			dbg_vsnprintf("QP %d is not valid\n", qp_id);

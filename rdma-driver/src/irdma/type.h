@@ -39,6 +39,9 @@
 
 #define RSVD_OFFSET 0xFFFFFFFF
 
+extern unsigned int dbg_opt;
+#define IRDMA_DBG_PUDA_PARTIAL_FPDU  0x00000001
+
 enum irdma_page_size {
 	IRDMA_PAGE_SIZE_4K = 0,
 	IRDMA_PAGE_SIZE_2M,
@@ -254,6 +257,19 @@ enum irdma_queue_type {
 	IRDMA_QUEUE_TYPE_SRQ,
 };
 
+enum irdma_rsvd_cq_id {
+	IRDMA_RSVD_CQ_ID_CQP = 0,
+	IRDMA_RSVD_CQ_ID_ILQ,
+	IRDMA_RSVD_CQ_ID_IEQ,
+};
+
+enum irdma_rsvd_qp_id {
+	IRDMA_RSVD_QP_ID_0 = 0,
+	IRDMA_RSVD_QP_ID_GSI_ILQ,
+	IRDMA_RSVD_QP_ID_IEQ,
+	IRDMA_RSVD_QP_ID_REM_ENDPOINT_TRK,
+};
+
 struct irdma_sc_dev;
 struct irdma_vsi_pestat;
 
@@ -386,9 +402,21 @@ struct irdma_vsi_pestat {
 	spinlock_t lock; /* rdma stats lock */
 };
 
+struct irdma_mmio_region {
+	u8 __iomem *addr;
+	resource_size_t len;
+	resource_size_t offset;
+};
+
 struct irdma_hw {
-	u8 __iomem *hw_addr;
-	u8 __iomem *priv_hw_addr;
+	union {
+		u8 __iomem *hw_addr;
+		struct {
+			struct irdma_mmio_region rdma_reg; /* RDMA region */
+			struct irdma_mmio_region *io_regs; /* Non-RDMA MMIO regions */
+			u16 num_io_regions; /* Number of Non-RDMA MMIO regions */
+		};
+	};
 	struct device *device;
 	struct irdma_hmc_info hmc;
 };
@@ -786,6 +814,9 @@ struct irdma_sc_dev {
 	struct irdma_sc_aeq *aeq;
 	struct irdma_sc_ceq *ceq[IRDMA_CEQ_MAX_COUNT];
 	struct irdma_sc_cq *ccq;
+	spinlock_t puda_cq_lock;
+	struct irdma_sc_cq *ilq_cq;
+	struct irdma_sc_cq *ieq_cq;
 	const struct irdma_irq_ops *irq_ops;
 	u8 qos_dist_mode;
 	struct irdma_qos qos[IRDMA_MAX_USER_PRIORITY];
@@ -802,8 +833,8 @@ struct irdma_sc_dev {
 	bool is_pf:1;
 	bool double_vlan_en:1;
 	bool multi_qs_enabled:1;
-	u8 protocol_used;
 	void **cq_table;
+	u8 protocol_used;
 	u64 hw_wa;	// Will have bit values for hw work arounds
 	u32 wa_mem_pages;
 	u8 rrf_multiplier;
@@ -1277,6 +1308,7 @@ struct irdma_mw_alloc_info {
 	bool mw_wide:1;
 	bool mw1_bind_dont_vldt_key:1;
 	u8 remote_atomics_en;
+	bool print_cmd;
 };
 
 struct irdma_reg_ns_stag_info {
@@ -1329,6 +1361,7 @@ struct irdma_dealloc_stag_info {
 	bool mr:1;
 	bool dealloc_pbl:1;
 	bool skip_flush_markers:1;
+	bool print_cmd;
 };
 
 struct irdma_register_shared_stag {
@@ -1496,7 +1529,8 @@ int irdma_sc_ceq_destroy(struct irdma_sc_ceq *ceq, u64 scratch, bool post_sq);
 int irdma_sc_ceq_init(struct irdma_sc_ceq *ceq,
 		      struct irdma_ceq_init_info *info);
 void irdma_sc_cleanup_ceqes(struct irdma_sc_cq *cq, struct irdma_sc_ceq *ceq);
-void *irdma_sc_process_ceq(struct irdma_sc_dev *dev, struct irdma_sc_ceq *ceq);
+bool irdma_sc_process_ceq(struct irdma_sc_dev *dev, struct irdma_sc_ceq *ceq,
+			  u32 *cq_idx);
 
 int irdma_sc_aeq_init(struct irdma_sc_aeq *aeq,
 		      struct irdma_aeq_init_info *info);

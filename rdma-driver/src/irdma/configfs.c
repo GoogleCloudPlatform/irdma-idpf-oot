@@ -1389,7 +1389,7 @@ static ssize_t roce_rca_config_show(struct config_item *item, char *buf)
 	struct irdma_device *iwdev = grp->iwdev;
 	ssize_t ret;
 
-	ret = sprintf(buf, "%d\n", iwdev->rca_config);
+	ret = sprintf(buf, "%d\n", iwdev->rf->rca_config);
 
 	return ret;
 }
@@ -1413,7 +1413,7 @@ static ssize_t roce_rca_config_store(struct config_item *item,
 	if (kstrtou8(buf, 0, &rca_config))
 		return -EINVAL;
 
-	iwdev->rca_config = rca_config;
+	iwdev->rf->rca_config = rca_config;
 
 	return count;
 }

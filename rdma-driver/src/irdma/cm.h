@@ -39,9 +39,7 @@
 #define SET_RST		8
 
 #define TCP_OPTIONS_PADDING	3
-
-#define IRDMA_DEFAULT_RETRYS	64
-#define IRDMA_DEFAULT_RETRANS	32
+#define IRDMA_DEFAULT_RETRANS	7
 #define IRDMA_DEFAULT_TTL		0x40
 #define IRDMA_DEFAULT_RTT_VAR		6
 #define IRDMA_DEFAULT_SS_THRESH		0x3fffffff
@@ -210,7 +208,6 @@ struct irdma_timer_entry {
 	unsigned long timetosend; /* jiffies */
 	struct irdma_puda_buf *sqbuf;
 	u32 type;
-	u32 retrycount;
 	u32 retranscount;
 	u32 context;
 	u32 send_retrans;
@@ -405,6 +402,7 @@ void irdma_if_notify_worker(struct work_struct *work);
 bool irdma_port_in_use(struct irdma_cm_core *cm_core, u16 port);
 void irdma_send_ack(struct irdma_cm_node *cm_node);
 void irdma_lpb_nop(struct irdma_sc_qp *qp);
-void irdma_rem_ref_cm_node(struct irdma_cm_node *cm_node);
+bool irdma_add_ref_cmnode(struct irdma_cm_node *cm_node);
+void irdma_rem_ref_cmnode(struct irdma_cm_node *cm_node);
 void irdma_add_conn_est_qh(struct irdma_cm_node *cm_node);
 #endif /* IRDMA_CM_H */
