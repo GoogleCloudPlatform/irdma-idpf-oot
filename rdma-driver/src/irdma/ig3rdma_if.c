@@ -384,7 +384,7 @@ static int ig3rdma_vport_probe(struct auxiliary_device *aux_dev, const struct au
 	/* Fill iwdev info */
 	iwdev->is_vport = true;
 	iwdev->rf = rf;
-	if (!idc_adev->vdev_info->vport_id)
+	if (!rf->iwdev)
 		rf->iwdev = iwdev;
 	iwdev->vport_id = idc_adev->vdev_info->vport_id;
 	iwdev->netdev = idc_adev->vdev_info->netdev;
