@@ -421,7 +421,7 @@ function gen() {
 			}
 
 			if (lacks && !found && not_empty || matches && found || absent && !found)
-				printf(found_fmt, define)
+				printf(found_fmt, define, define)
 			else if (missing_fmt)
 				printf(missing_fmt, define)
 		}
