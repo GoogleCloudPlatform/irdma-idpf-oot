@@ -3305,7 +3305,7 @@ bool kc__rdma_block_iter_next(struct kc_ib_block_iter *biter)
 
 #ifdef COPY_USER_PGADDR_VER_1
 void irdma_copy_user_pgaddrs(struct irdma_mr *iwmr, u64 *pbl,
-			     enum irdma_pble_level level)
+			     u32 pbl_len, enum irdma_pble_level level)
 {
 	struct ib_umem *region = iwmr->region;
 	struct irdma_pbl *iwpbl = &iwmr->iwpbl;
@@ -3315,7 +3315,9 @@ void irdma_copy_user_pgaddrs(struct irdma_mr *iwmr, u64 *pbl,
 	struct irdma_pble_alloc *palloc = &iwpbl->pble_alloc;
 	struct irdma_pble_info *pinfo;
 	u32 idx = 0;
-	u32 pbl_cnt = 0;
+
+	if (!pbl_len)
+		return;
 
 	pinfo = (level == PBLE_LEVEL_1) ? NULL : palloc->level2.leaf;
 	for_each_sg(region->sg_head.sgl, sg, region->nmap, entry) {
@@ -3330,8 +3332,8 @@ void irdma_copy_user_pgaddrs(struct irdma_mr *iwmr, u64 *pbl,
 				*pbl = pg_addr;
 			else
 				continue;
-			if (++pbl_cnt == palloc->total_cnt)
-				break;
+			if (!--pbl_len)
+				return;
 			pbl = irdma_next_pbl_addr(pbl, &pinfo, &idx);
 		}
 	}

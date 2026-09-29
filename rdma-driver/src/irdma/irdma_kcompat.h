@@ -678,7 +678,7 @@ kc__rdma_umem_block_iter_next(struct kc_ib_block_iter *biter)
 
 #ifdef COPY_USER_PGADDR_VER_1
 void irdma_copy_user_pgaddrs(struct irdma_mr *iwmr, u64 *pbl,
-			     enum irdma_pble_level level);
+			     u32 pbl_len, enum irdma_pble_level level);
 #endif
 
 void irdma_del_memlist(struct irdma_mr *iwmr,
