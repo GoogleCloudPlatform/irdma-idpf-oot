@@ -1063,9 +1063,7 @@ static bool irdma_sleepable_ah_exists(struct irdma_device *iwdev,
 		  new_ah->sc_ah.ah_info.dest_ip_addr[2] ^
 		  new_ah->sc_ah.ah_info.dest_ip_addr[3];
 	u32 save_flow_label = new_ah->sc_ah.ah_info.flow_label;
-	bool skip_flow_label =
-		FIELD_GET(IRDMA_SKIP_FLOW_LABEL_BIT, iwdev->rf->sc_dev.vc_caps.feature_cap)
-		? true : false;
+	bool skip_flow_label = true;
 
 	hash_for_each_possible(iwdev->ah_hash_tbl, ah, list, key) {
 		/* Set ah_valid, ah_id the same so memcmp can work */
@@ -1125,9 +1123,7 @@ static bool irdma_nosleep_ah_exists(struct irdma_device *iwdev,
 		  new_ah->sc_ah.ah_info.dest_ip_addr[2] ^
 		  new_ah->sc_ah.ah_info.dest_ip_addr[3];
 	u32 save_flow_label = new_ah->sc_ah.ah_info.flow_label;
-	bool skip_flow_label =
-		FIELD_GET(IRDMA_SKIP_FLOW_LABEL_BIT, iwdev->rf->sc_dev.vc_caps.feature_cap)
-		? true : false;
+	bool skip_flow_label = true;
 
 	hash_for_each_possible(iwdev->ah_nosleep_hash_tbl, ah, list, key) {
 		/* Set ah_valid, ah_id the same so memcmp can work */
