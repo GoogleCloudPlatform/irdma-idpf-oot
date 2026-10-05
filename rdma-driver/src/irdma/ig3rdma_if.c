@@ -158,8 +158,17 @@ static int ig3rdma_core_fill_device_info(struct irdma_pci_f *rf,
 		return err;
 	}
 
-	if (rf->rdma_ver == IRDMA_GEN_3 && cdev_info->pdev->revision < MEV_PCI_VER_C0) {
 #define IRDMA_MEV_B0_RDMA_KEY	0xb
+
+	if (cdev_info->pdev->revision != MEV_PCI_VER_C1) {
+		dev_info(rf->hw.device, "Using MMG workarounds\n");
+		rdma_key = IRDMA_MEV_B0_RDMA_KEY;
+		hw_type_wa = MMG_DEV_00;
+	} else {
+		dev_info(rf->hw.device, "Not using MMG workarounds\n");
+	}
+
+	if (rf->rdma_ver == IRDMA_GEN_3 && cdev_info->pdev->revision < MEV_PCI_VER_C0) {
 		if (rdma_key != IRDMA_MEV_B0_RDMA_KEY) {
 			dev_err(rf->hw.device,
 				"IRDMA: Invalid RDMA key used for B0\n");
