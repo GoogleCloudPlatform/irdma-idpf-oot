@@ -4075,8 +4075,8 @@ static int irdma_sc_parse_fpm_query_buf(struct irdma_sc_dev *dev, __le64 *buf,
 		ird_encoding = (u8)FIELD_GET(IRDMA_QUERY_FPM_MAX_IRD, temp);
 		hmc_fpm_misc->ird =
 			irdma_sc_get_decoded_ird_size_gen_3(ird_encoding) / 2;
-		dev->hw_attrs.max_hw_ird = hmc_fpm_misc->ird;
-		dev->hw_attrs.max_hw_ord = hmc_fpm_misc->ird;
+		dev->hw_attrs.max_hw_ird = min_t(u16, hmc_fpm_misc->ird, 255);
+		dev->hw_attrs.max_hw_ord = min_t(u16, hmc_fpm_misc->ird, 255);
 	}
 	if (dev->hw_attrs.uk_attrs.hw_rev == IRDMA_GEN_1)
 		return 0;
