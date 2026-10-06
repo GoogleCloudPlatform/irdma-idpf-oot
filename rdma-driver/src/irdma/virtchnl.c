@@ -7,8 +7,10 @@
 #include "type.h"
 #include "protos.h"
 #include "virtchnl.h"
+#include "telemetry.h"
 #include "ws.h"
 #include "i40iw_hw.h"
+#include "ig3rdma_hw.h"
 extern bool irdma_rca_ena;
 
 struct vchnl_reg_map_elem {
@@ -872,6 +874,7 @@ static int irdma_vchnl_req_verify_resp(struct irdma_vchnl_req *vchnl_req,
 	case IRDMA_VCHNL_OP_QUEUE_VECTOR_UNMAP:
 	case IRDMA_VCHNL_OP_ADD_VPORT:
 	case IRDMA_VCHNL_OP_DEL_VPORT:
+	case IRDMA_VCHNL_OP_PUSH_TEL_EVENTS:
 		break;
 	default:
 		return -EBADMSG;
@@ -1048,27 +1051,38 @@ int irdma_vchnl_req_get_reg_layout(struct irdma_sc_dev *dev)
 			continue;
 
 		reg_idx = reg_map_array->reg_idx;
-		if (irdma_rca_ena && dev->is_pf)
-			hw_addr = dev->db_addr;
-		else
-			hw_addr = dev->hw->hw_addr;
 
 		/* Page relative, DB Offset do not need bar offset */
 		if (reg_idx == IRDMA_DB_ADDR_OFFSET ||
-		    (reg_array[rindex].reg_id & IRDMA_VCHNL_REG_PAGE_REL))
-			hw_addr = NULL;
+		    (reg_array[rindex].reg_id & IRDMA_VCHNL_REG_PAGE_REL)) {
+			dev->hw_regs[reg_idx] =
+				(u32 __iomem *)(uintptr_t)reg_array[rindex].reg_offset;
+			continue;
+		}
+
 
 		/* Update the local HW struct */
-		if (reg_idx == IRDMA_GLINT_DYN_CTL)
-			dev->hw_regs[reg_idx] = (u32 __iomem *)
-				(hw_addr + reg_array[rindex].reg_offset);
-		else
-			dev->hw_regs[reg_idx] = (u32 __iomem *)
-				(hw_addr + reg_array[rindex].reg_offset +
-				 db_page_offset);
-
+		if (irdma_rca_ena && dev->is_pf) {
+			hw_addr = dev->db_addr;
+			if (reg_idx == IRDMA_GLINT_DYN_CTL)
+				dev->hw_regs[reg_idx] = (u32 __iomem *)
+					(hw_addr + reg_array[rindex].reg_offset);
+			else
+				dev->hw_regs[reg_idx] = (u32 __iomem *)
+					(hw_addr + reg_array[rindex].reg_offset +
+					 db_page_offset);
+		} else {
+			if (reg_idx == IRDMA_GLINT_DYN_CTL)
+				dev->hw_regs[reg_idx] =
+					ig3rdma_get_reg_addr(dev->hw, reg_array[rindex].reg_offset);
+			else
+				dev->hw_regs[reg_idx] =
+					ig3rdma_get_reg_addr(dev->hw, reg_array[rindex].reg_offset);
+		}
 		ibdev_dbg(to_ibdev(dev), "VIRT: hw_regs[%d] %lx\n", reg_idx,
 			  (uintptr_t)dev->hw_regs[reg_idx]);
+		if (!dev->hw_regs[reg_idx])
+			return -EINVAL;
 	}
 
 	if (!regfld_array)
@@ -1565,6 +1579,26 @@ int irdma_vchnl_req_get_caps(struct irdma_sc_dev *dev)
 	}
 
 	return 0;
+}
+
+/**
+ * irdma_vchnl_push_tel_events - Push telemetry events to HMA
+ * @dev: rdma device pointer
+ * @event: telemetry event
+*/
+int irdma_vchnl_push_tel_events(struct irdma_sc_dev *dev,
+                           struct irdma_tel_event *event)
+{
+	struct irdma_vchnl_req_init_info info = {};
+
+	info.op_code = IRDMA_VCHNL_OP_PUSH_TEL_EVENTS;
+	info.op_ver = IRDMA_VCHNL_OP_PUSH_TEL_EVENTS_V0;
+	info.req_parm = event; //  TLV telemetry message
+	info.req_parm_len = sizeof(*event) + event->hdr.data_len;
+	info.resp_parm = NULL;
+	info.resp_parm_len = 0;
+
+	return irdma_vchnl_req_send_sync(dev, &info);
 }
 
 /**

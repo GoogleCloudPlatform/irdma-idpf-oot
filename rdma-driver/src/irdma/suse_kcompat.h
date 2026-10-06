@@ -42,6 +42,7 @@ int irdma_del_gid(struct ib_device *device,
 #define IRDMA_ALLOC_MR_VER_0
 #define IW_PORT_IMMUTABLE_V2
 #define HAS_IB_SET_DEVICE_OP
+#define HAVE_XARRAY
 #define MODIFY_PORT_V2
 #define NETDEV_TO_IBDEV_SUPPORT
 #define QUERY_GID_V2
@@ -117,6 +118,7 @@ int irdma_del_gid(struct ib_device *device,
 #define IRDMA_ALLOC_MR_VER_0
 #define IW_PORT_IMMUTABLE_V2
 #define HAS_IB_SET_DEVICE_OP
+#define HAVE_XARRAY
 #define MODIFY_PORT_V2
 #define NETDEV_TO_IBDEV_SUPPORT
 #define QUERY_GID_V2
@@ -190,6 +192,7 @@ int irdma_del_gid(struct ib_device *device,
 #define IRDMA_ALLOC_MR_VER_0
 #define IW_PORT_IMMUTABLE_V2
 #define HAS_IB_SET_DEVICE_OP
+#define HAVE_XARRAY
 #define MODIFY_PORT_V2
 #define NETDEV_TO_IBDEV_SUPPORT
 #define QUERY_GID_V2
@@ -266,6 +269,7 @@ int irdma_del_gid(struct ib_device *device,
 #endif
 #define IW_PORT_IMMUTABLE_V2
 #define HAS_IB_SET_DEVICE_OP
+#define HAVE_XARRAY
 #define MODIFY_PORT_V2
 #define NETDEV_TO_IBDEV_SUPPORT
 #define QUERY_GID_V2
@@ -341,6 +345,7 @@ int irdma_del_gid(struct ib_device *device,
 #define IRDMA_AUX_GET_SET_DRV_DATA
 #define IW_PORT_IMMUTABLE_V1
 #define HAS_IB_SET_DEVICE_OP
+#define HAVE_XARRAY
 #define MODIFY_PORT_V1
 #define NETDEV_TO_IBDEV_SUPPORT
 #define QUERY_GID_V1
@@ -406,6 +411,7 @@ int irdma_del_gid(struct ib_device *device,
 #define GET_HW_STATS_V1
 #define GET_LINK_LAYER_V1
 #define HAS_IB_SET_DEVICE_OP
+#define HAVE_XARRAY
 #define IB_DEALLOC_DRIVER_SUPPORT
 #define IB_UMEM_GET_V1
 #define IB_IW_PKEY

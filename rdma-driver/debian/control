@@ -1,0 +1,20 @@
+Source: irdma-dkms
+Section: kernel
+Priority: optional
+Maintainer: Google LLC <support.google.com>
+Build-Depends: debhelper-compat (= 13), dkms
+Standards-Version: 4.5.0
+Homepage: http://support.google.com
+
+Package: irdma-dkms
+Architecture: all
+Depends: dkms, 
+         findutils, 
+         gawk, 
+         bash, 
+         linux-headers-generic | linux-headers-686-pae | linux-headers-amd64 | linux-headers,
+         ${misc:Depends}
+Provides: irdma-dkms
+Description: DKMS build of IRDMA Linux Driver
+ This package contains the irdma Linux Kernel Module,
+ managed via the Dynamic Kernel Module Support (DKMS) framework.

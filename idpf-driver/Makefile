@@ -2,7 +2,7 @@
 # Copyright (C) 2021 Intel Corporation
 
 TARGETS := idpf auxiliary
-VERSION := 1.0.2
+VERSION := 1.0.6
 
 # Shortcut version target
 ifneq ($(filter version,${MAKECMDGOALS}),)
@@ -19,6 +19,18 @@ ifneq (${KERNELRELEASE},)
 obj-y := $(strip $(addsuffix /src/,${TARGETS}))
 ccflags-y += -I$(src)
 subdir-ccflags-y += -I$(src)
+
+# Apply build modifier flags
+ifeq (${BUILD_UPLINK_PORT_STATS},YES)
+  ccflags-y += -DCONFIG_UPLINK_PORT_STATS
+  subdir-ccflags-y += -DCONFIG_UPLINK_PORT_STATS
+endif
+
+ifeq (${BUILD_RCA},YES)
+  ccflags-y += -DCONFIG_RCA_SUPPORT -DCONFIG_OEM_CAPS
+  subdir-ccflags-y += -DCONFIG_RCA_SUPPORT -DCONFIG_OEM_CAPS
+endif
+
 else # ifneq (${KERNELRELEASE},)
 # normal make
 
@@ -68,12 +80,12 @@ endif
 CHECK_AUX_BUS := $(realpath ./scripts/check_aux_bus)
 $(shell chmod +x ${CHECK_AUX_BUS})
 
-include common.mk
+include idpf/src/common.mk
 
 # SIOV support is only supported if the kernel has features for controlling
 # PASID support. Do not even try to build SIOV support if the kernel lacks
 # the necessary infrastructure.
-ifneq ($(shell grep HAVE_PASID_SUPPORT $(src)/kcompat_generated_defs.h),)
+ifneq ($(shell grep HAVE_PASID_SUPPORT idpf/src/kcompat_generated_defs.h),)
 export ENABLE_SIOV_SUPPORT := 1
 else
 # Force SIOV support on ARM, which is needed by ACC. Since we cannot
@@ -84,7 +96,7 @@ export ENABLE_SIOV_SUPPORT := 1
 override CFLAGS_EXTRA += -DENABLE_ACC_PASID_WA
 endif
 endif # HAVE_PASID_SUPPORT is in kcompat_generated_defs.h
-ifneq ($(shell grep HAVE_DEVLINK_PORT_NEW $(src)/kcompat_generated_defs.h),)
+ifneq ($(shell grep HAVE_DEVLINK_PORT_NEW idpf/src/kcompat_generated_defs.h),)
 export ENABLE_DEVLINK_SUPPORT := 1
 endif # HAVE_DEVLINK_PORT_NEW is in kcompat_generated_defs.h
 
@@ -137,9 +149,26 @@ $(call cmd_depmod)
 endef
 endif
 
-compile:
+# Set default goal to compile (must be set before the first target is defined)
+.DEFAULT_GOAL := compile
+
+# Ensure kcompat_generated_defs.h exists for all targets before compiling
+# This is done by invoking a simple target in each module's Makefile which
+# will cause common.mk to be included and generate the kcompat file
+.PHONY: prepare_kcompat
+prepare_kcompat:
+	@for target in ${TARGETS}; do \
+		if [ -f $$target/src/Makefile ]; then \
+			${MAKE} -C $$target/src --no-print-directory -s version 2>/dev/null || true; \
+		fi; \
+	done
+
+compile: prepare_kcompat
 	@${MAKE} -C ${KSRC} M=$$PWD ${CONFIG_DRIVERS} ccflags-y="${CFLAGS_EXTRA} ${EXTRA_CFLAGS}" modules \
-		NEED_AUX_BUS=${NEED_AUX_BUS} ${EXTRA_OPTS}
+		NEED_AUX_BUS=${NEED_AUX_BUS} \
+		BUILD_UPLINK_PORT_STATS=${BUILD_UPLINK_PORT_STATS} \
+		BUILD_RCA=${BUILD_RCA} \
+		${EXTRA_OPTS}
 
 .PHONY: install
 install: compile
@@ -155,7 +184,7 @@ uninstall:
 .PHONY: clean
 clean:
 	@${MAKE} -C ${KSRC} M=$$PWD clean
-	@rm -f kcompat_generated_defs.h
+	@rm -f idpf/src/kcompat_generated_defs.h auxiliary/src/kcompat_generated_defs.h
 
 endif # ifneq (${KERNELRELEASE},)
 endif # version target handling

@@ -1,0 +1,19 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@ --with dkms
+
+override_dh_auto_build:
+	# No build step needed for DKMS source delivery
+
+override_dh_auto_install:
+	# Create the DKMS source directory
+	mkdir -p debian/irdma-dkms/usr/src/irdma-2.9.0
+	rsync -av --exclude 'debian' ./ debian/irdma-dkms/usr/src/irdma-2.9.0/
+	
+	# Setup depmod.d override
+	mkdir -p debian/irdma-dkms/etc/depmod.d/
+	echo "override irdma * weak-updates" >> debian/irdma-dkms/etc/depmod.d/irdma.conf
+
+override_dh_dkms:
+	dh_dkms -v

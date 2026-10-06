@@ -1,0 +1,45 @@
+#!/bin/bash
+set -e
+
+NAME="irdma-dkms"
+VERSION="2.9.0"
+
+case "$1" in
+	configure)
+		rmmod i40iw 2> /dev/null || true
+		rm -f /lib/modules/`uname -r`/kernel/drivers/infiniband/hw/i40iw/i40iw.ko 2> /dev/null
+		rm -f /lib/modules/`uname -r`/updates/drivers/infiniband/hw/i40iw/i40iw.ko 2> /dev/null
+		rm -f /lib/modules/`uname -r`/kernel/drivers/infiniband/hw/i40iw/i40iw.ko.xz 2> /dev/null
+		rm -f /lib/modules/`uname -r`/updates/drivers/infiniband/hw/i40iw/i40iw.ko.xz 2> /dev/null
+		mkdir -p "/etc/modprobe.d/"
+		if [ -e "/etc/modprobe.d/irdma.conf" ]; then
+			echo "Updating /etc/modprobe.d/irdma.conf file ..."
+			if [ "" = "$(grep 'blacklist i40iw' /etc/modprobe.d/irdma.conf)" ]; then
+				echo "blacklist i40iw"  >>  "/etc/modprobe.d/irdma.conf"
+				echo "alias i40iw irdma" >> "/etc/modprobe.d/irdma.conf"
+			fi
+		else
+			echo "Creating /etc/modprobe.d/irdma.conf file ..."
+			echo "blacklist i40iw"  >  "/etc/modprobe.d/irdma.conf"
+			echo "alias i40iw irdma" >> "/etc/modprobe.d/irdma.conf"
+		fi
+
+		# 2. Trigger DKMS build/install
+		echo "Registering and building ${NAME} version ${VERSION} via DKMS..."
+		;;
+esac
+
+#DEBHELPER#
+
+case "$1" in
+	configure)
+		# 3. Update depmod and initramfs
+		/sbin/depmod -a > //dev/null 2>&1 || true
+		if [ -x /usr/sbin/update-initramfs ]; then
+			echo "Updating initramfs, please reboot after package installation"
+			dpkg-trigger --no-await update-initramfs
+		fi
+		;;
+esac
+
+exit 0

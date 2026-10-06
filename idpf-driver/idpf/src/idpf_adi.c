@@ -442,12 +442,13 @@ static int idpf_adi_config(struct idpf_adi *adi, u32 pasid, bool ena)
 static u32 idpf_adi_read_reg32(struct idpf_adi *adi, size_t offs)
 {
 	struct idpf_adi_priv *priv = idpf_get_adi_priv(adi);
-	struct idpf_adapter *adapter;
+	struct idpf_adapter *adapter = priv->adapter;
 
-	adapter = priv->adapter;
-	switch (offs) {
-	case VFGEN_RSTAT:
+	/* Account for static rstat region start */
+	if (offs == VFGEN_RSTAT)
 		return priv->reset_state;
+
+	switch (offs) {
 	case VF_ATQBAL:
 		return readl(idpf_get_reg_addr(adapter, PF_MBX_ATQBAL(priv->mbx_id)));
 	case VF_ATQBAH:

@@ -119,9 +119,6 @@ void irdma_clr_wqes(struct irdma_qp_uk *qp, u32 qp_wqe_idx)
  */
 void irdma_uk_qp_post_wr(struct irdma_qp_uk *qp)
 {
-	/* valid bit is written before ringing doorbell */
-	dma_wmb();
-
 	writel(qp->qp_id, qp->wqe_alloc_db);
 	qp->initial_ring.head = qp->sq_ring.head;
 }
@@ -1281,9 +1278,6 @@ void irdma_uk_cq_request_notification(struct irdma_cq_uk *cq,
 		   FIELD_PREP(IRDMA_CQ_DBSA_ARM_NEXT, arm_next);
 
 	set_64bit_val(cq->shadow_area, 32, temp_val);
-
-	dma_wmb(); /* make sure WQE is populated before valid bit is set */
-
 	writel(cq->cq_id, cq->cqe_alloc_db);
 }
 
@@ -1901,7 +1895,7 @@ int irdma_get_sqdepth(struct irdma_uk_attrs *uk_attrs, u32 sq_size, u8 shift, u3
 	else if (hw_quanta > uk_attrs->max_hw_wq_quanta)
 		return -EINVAL;
 
-	*sqdepth = hw_quanta;
+	*sqdepth = (u32)hw_quanta;
 	return 0;
 }
 
@@ -1923,7 +1917,7 @@ int irdma_get_rqdepth(struct irdma_uk_attrs *uk_attrs, u32 rq_size, u8 shift, u3
 	else if (hw_quanta > uk_attrs->max_hw_rq_quanta)
 		return -EINVAL;
 
-	*rqdepth = hw_quanta;
+	*rqdepth = (u32)hw_quanta;
 	return 0;
 }
 

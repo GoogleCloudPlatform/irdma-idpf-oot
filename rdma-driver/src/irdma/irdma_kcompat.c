@@ -2,6 +2,8 @@
 /* Copyright (c) 2018 - 2025 Intel Corporation */
 #include "main.h"
 
+extern int ah_deferred_delete;
+
 #define IRDMA_ROCE_UDP_ENCAP_VALID_PORT_MIN (0xC000)
 
 static u16 kc_rdma_flow_label_to_udp_sport(u32 fl)
@@ -940,17 +942,52 @@ static int irdma_create_ah_vlan_tag(struct irdma_device *iwdev,
 	return 0;
 }
 
+/**
+ * irdma_create_ah_wait - wait for Create AH CQP op completion
+ * @rf: RDMA PCI function
+ * @sc_ah: address handle being created
+ * @sleep: if false, wait for CQP op completion (poll)
+ */
 static int irdma_create_ah_wait(struct irdma_pci_f *rf,
 				struct irdma_sc_ah *sc_ah, bool sleep)
 {
-	int ret;
+	struct irdma_cqp_request *cqp_request;
+	int err;
+
+	cqp_request = sc_ah->ah_info.cqp_request;
 
 	if (!sleep) {
+#ifdef HAVE_POLL_TIMEOUT_US_ATOMIC
+		const u64 tmout_ms = irdma_get_timeout_threshold(&rf->sc_dev) *
+			CQP_COMPL_WAIT_TIME_MS;
+
+		if (poll_timeout_us_atomic(irdma_cqp_ce_handler(rf,
+								&rf->ccq.sc_cq),
+					   atomic_read(&sc_ah->ah_info.ah_valid),
+					   1, tmout_ms * USEC_PER_MSEC, false)) {
+			err = -ETIMEDOUT;
+		} else if (cqp_request->compl_info.op_ret_val) {
+			err = -EINVAL;
+		}
+
+		if (err) {
+			ibdev_err(&rf->iwdev->ibdev,
+				  "VERBS: CQP create AH error err = %d opt_ret_val = %d",
+				  err, cqp_request->compl_info.op_ret_val);
+			irdma_put_cqp_request(&rf->cqp, cqp_request);
+			if (err == -ETIMEDOUT && !rf->reset) {
+				rf->reset = true;
+				rf->irdma_initiated_reset = true;
+				rf->gen_ops.request_reset(rf);
+			}
+			return err;
+		}
+#else /* HAVE_POLL_TIMEOUT_US_ATOMIC */
+#define AH_SPIN_WARN_PERIOD   msecs_to_jiffies(5000)
 		bool timeout = false;
 		u64 start = get_jiffies_64();
+		u64 warn_start = start;
 		u64 completed_ops = atomic64_read(&rf->sc_dev.cqp->completed_ops);
-		struct irdma_cqp_request *cqp_request =
-			sc_ah->ah_info.cqp_request;
 		const u64 timeout_jiffies =
 			msecs_to_jiffies(rf->sc_dev.hw_attrs.max_cqp_compl_wait_time_ms *
 					 CQP_TIMEOUT_THRESHOLD);
@@ -978,22 +1015,31 @@ static int irdma_create_ah_wait(struct irdma_pci_f *rf,
 				timeout = true;
 				break;
 			}
+
+			if ((curr_jiffies - warn_start) > AH_SPIN_WARN_PERIOD) {
+				printk(KERN_ERR "Waiting for create AH CQP OP for "
+						"more than 5 seconds (start = %llu, now = %llu, %u total milliseconds)\n",
+				       start, curr_jiffies, jiffies_to_msecs(curr_jiffies - start));
+				warn_start = curr_jiffies;
+			}
 		}
 
 		if (!timeout && !cqp_request->compl_info.op_ret_val) {
 			irdma_put_cqp_request(&rf->cqp, cqp_request);
-			sc_ah->ah_info.ah_valid = true;
+			atomic_set(&sc_ah->ah_info.ah_valid, true);
 		} else {
-			ret = timeout ? -ETIMEDOUT : -EINVAL;
-			ibdev_err(&rf->iwdev->ibdev, "CQP create AH error ret = %d opt_ret_val = %d",
-				  ret, cqp_request->compl_info.op_ret_val);
+			err = timeout ? -ETIMEDOUT : -EINVAL;
+			ibdev_err(&rf->iwdev->ibdev,
+				  "CQP create AH error err = %d opt_ret_val = %d",
+				  err, cqp_request->compl_info.op_ret_val);
 			irdma_put_cqp_request(&rf->cqp, cqp_request);
 			if (timeout && !rf->reset) {
 				rf->reset = true;
 				rf->gen_ops.request_reset(rf);
 			}
-			return ret;
+			return err;
 		}
+#endif /* HAVE_POLL_TIMEOUT_US_ATOMIC */
 	}
 
 	return 0;
@@ -1008,7 +1054,7 @@ static int irdma_create_ah_wait(struct irdma_pci_f *rf,
  * returns true if AH is found, false if not found.
  */
 static bool irdma_sleepable_ah_exists(struct irdma_device *iwdev,
-			    struct irdma_ah *new_ah)
+				      struct irdma_ah *new_ah)
 {
 	struct irdma_ah *ah;
 	u32 save_ah_id = new_ah->sc_ah.ah_info.ah_idx;
@@ -1017,23 +1063,30 @@ static bool irdma_sleepable_ah_exists(struct irdma_device *iwdev,
 		  new_ah->sc_ah.ah_info.dest_ip_addr[2] ^
 		  new_ah->sc_ah.ah_info.dest_ip_addr[3];
 	u32 save_flow_label = new_ah->sc_ah.ah_info.flow_label;
-	bool skip_flow_label =
-		FIELD_GET(IRDMA_SKIP_FLOW_LABEL_BIT, iwdev->rf->sc_dev.vc_caps.feature_cap)
-		? true : false;
+	bool skip_flow_label = true;
 
 	hash_for_each_possible(iwdev->ah_hash_tbl, ah, list, key) {
 		/* Set ah_valid, ah_id the same so memcmp can work */
 		new_ah->sc_ah.ah_info.ah_idx = ah->sc_ah.ah_info.ah_idx;
-		new_ah->sc_ah.ah_info.ah_valid = ah->sc_ah.ah_info.ah_valid;
+		atomic_set(&new_ah->sc_ah.ah_info.ah_valid,
+			   atomic_read(&ah->sc_ah.ah_info.ah_valid));
 		if (skip_flow_label)
 			new_ah->sc_ah.ah_info.flow_label = ah->sc_ah.ah_info.flow_label;
 		if (!memcmp(&ah->sc_ah.ah_info, &new_ah->sc_ah.ah_info,
 			    sizeof(ah->sc_ah.ah_info))) {
-			refcount_inc(&ah->refcnt);
+			if (!ah->refcnt) {
+				/* Item was on the pending deletion list, so
+				 * remove since there's now a new reference to it.
+				 */
+				list_del(&ah->node);
+				iwdev->ah_deletion_list_cnt--;
+			}
+			ah->refcnt++;
 			new_ah->parent_ah = ah;
 			return true;
 		}
 	}
+	atomic_set(&new_ah->sc_ah.ah_info.ah_valid, false);
 	new_ah->sc_ah.ah_info.ah_idx = save_ah_id;
 	if (skip_flow_label)
 		new_ah->sc_ah.ah_info.flow_label = save_flow_label;
@@ -1047,7 +1100,7 @@ static bool irdma_sleepable_ah_exists(struct irdma_device *iwdev,
 	iwdev->ah_list_cnt++;
 	if (iwdev->ah_list_cnt > iwdev->ah_list_hwm)
 		iwdev->ah_list_hwm = iwdev->ah_list_cnt;
-	refcount_set(&ah->refcnt, 1);
+	ah->refcnt = 1;
 
 	return false;
 }
@@ -1061,7 +1114,7 @@ static bool irdma_sleepable_ah_exists(struct irdma_device *iwdev,
  * returns true if AH is found, false if not found.
  */
 static bool irdma_nosleep_ah_exists(struct irdma_device *iwdev,
-			    struct irdma_ah *new_ah)
+				    struct irdma_ah *new_ah)
 {
 	struct irdma_ah *ah;
 	u32 save_ah_id = new_ah->sc_ah.ah_info.ah_idx;
@@ -1070,22 +1123,30 @@ static bool irdma_nosleep_ah_exists(struct irdma_device *iwdev,
 		  new_ah->sc_ah.ah_info.dest_ip_addr[2] ^
 		  new_ah->sc_ah.ah_info.dest_ip_addr[3];
 	u32 save_flow_label = new_ah->sc_ah.ah_info.flow_label;
-	bool skip_flow_label =
-		FIELD_GET(IRDMA_SKIP_FLOW_LABEL_BIT, iwdev->rf->sc_dev.vc_caps.feature_cap)
-		? true : false;
+	bool skip_flow_label = true;
 
 	hash_for_each_possible(iwdev->ah_nosleep_hash_tbl, ah, list, key) {
-		/* Set ah_id the same so memcmp can work */
+		/* Set ah_valid, ah_id the same so memcmp can work */
 		new_ah->sc_ah.ah_info.ah_idx = ah->sc_ah.ah_info.ah_idx;
+		atomic_set(&new_ah->sc_ah.ah_info.ah_valid,
+			   atomic_read(&ah->sc_ah.ah_info.ah_valid));
 		if (skip_flow_label)
 			new_ah->sc_ah.ah_info.flow_label = ah->sc_ah.ah_info.flow_label;
 		if (!memcmp(&ah->sc_ah.ah_info, &new_ah->sc_ah.ah_info,
 			    sizeof(ah->sc_ah.ah_info))) {
-			refcount_inc(&ah->refcnt);
+			if (!ah->refcnt) {
+				/* Item was on the pending deletion list, so
+				 * remove since there's now a new reference to it.
+				 */
+				list_del(&ah->node);
+				iwdev->ah_nosleep_deletion_list_cnt--;
+			}
+			ah->refcnt++;
 			new_ah->parent_ah = ah;
 			return true;
 		}
 	}
+	atomic_set(&new_ah->sc_ah.ah_info.ah_valid, false);
 	new_ah->sc_ah.ah_info.ah_idx = save_ah_id;
 	if (skip_flow_label)
 		new_ah->sc_ah.ah_info.flow_label = save_flow_label;
@@ -1099,7 +1160,7 @@ static bool irdma_nosleep_ah_exists(struct irdma_device *iwdev,
 	iwdev->ah_nosleep_list_cnt++;
 	if (iwdev->ah_nosleep_list_cnt > iwdev->ah_nosleep_list_hwm)
 		iwdev->ah_nosleep_list_hwm = iwdev->ah_nosleep_list_cnt;
-	refcount_set(&ah->refcnt, 1);
+	ah->refcnt = 1;
 
 	return false;
 }
@@ -1113,7 +1174,7 @@ static bool irdma_nosleep_ah_exists(struct irdma_device *iwdev,
  *
  * returns true if entry is deleted else false
  */
-static bool irdma_ah_hash_delete(struct irdma_device *iwdev,
+static __maybe_unused bool irdma_ah_hash_delete(struct irdma_device *iwdev,
 			    struct irdma_ah *ah)
 {
 	unsigned long flags;
@@ -1121,7 +1182,8 @@ static bool irdma_ah_hash_delete(struct irdma_device *iwdev,
 	if (ah->parent_ah) {
 		if (ah->sleep) {
 			mutex_lock(&iwdev->ah_tbl_lock);
-			if (!refcount_dec_and_test(&ah->parent_ah->refcnt)) {
+			ah->parent_ah->refcnt--;
+			if (ah->parent_ah->refcnt) {
 				mutex_unlock(&iwdev->ah_tbl_lock);
 				return false;
 			}
@@ -1131,7 +1193,8 @@ static bool irdma_ah_hash_delete(struct irdma_device *iwdev,
 			mutex_unlock(&iwdev->ah_tbl_lock);
 		} else {
 			spin_lock_irqsave(&iwdev->ah_nosleep_tbl_lock, flags);
-			if (!refcount_dec_and_test(&ah->parent_ah->refcnt)) {
+			ah->parent_ah->refcnt--;
+			if (ah->parent_ah->refcnt) {
 				spin_unlock_irqrestore(&iwdev->ah_nosleep_tbl_lock, flags);
 				return false;
 			}
@@ -1273,29 +1336,24 @@ exit:
 	if (udata) {
 		uresp.ah_id = ah->sc_ah.ah_info.ah_idx;
 		err = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp), udata->outlen));
-		if (err) {
-			if (!ah->parent_ah ||
-			    (ah->parent_ah && refcount_dec_and_test(&ah->parent_ah->refcnt))) {
-				irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah,
-						IRDMA_OP_AH_DESTROY, false, NULL, ah);
-				ah_id = ah->sc_ah.ah_info.ah_idx;
-				goto err_ah_create;
-			}
-			goto err_unlock;
-		}
+		if (err)
+			goto err_ah_create;
 	}
 	mutex_unlock(&iwdev->ah_tbl_lock);
 
 	return &ah->ibah;
 
 err_ah_create:
-	if (ah->parent_ah) {
-		hash_del(&ah->parent_ah->list);
-		kfree(ah->parent_ah);
-		iwdev->ah_list_cnt--;
+	ah->parent_ah->refcnt--;
+	if (!ah->parent_ah->refcnt) {
+		/* Last ref dropped, add to deferred delete list. */
+		list_add_tail(&ah->parent_ah->node, &iwdev->ah_deletion_list);
+		iwdev->ah_deletion_list_cnt++;
+		iwdev->ah_deletion_list_cnt_total++;
+		if (iwdev->ah_deletion_list_cnt > iwdev->ah_deletion_list_cnt_peak)
+			iwdev->ah_deletion_list_cnt_peak = iwdev->ah_deletion_list_cnt;
+		ah->parent_ah->deletion_timestamp = ktime_get_raw_ns();
 	}
-err_unlock:
-	mutex_unlock(&iwdev->ah_tbl_lock);
 err_gid_l2:
 	kfree(ah);
 	if (ah_id)
@@ -1416,8 +1474,13 @@ static struct ib_ah *irdma_create_nosleep_ah(struct ib_pd *ibpd,
 		goto exit;
 	}
 
+#ifdef HAVE_POLL_TIMEOUT_US_ATOMIC
+	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
+			      false, irdma_gsi_ud_qp_ah_cb, sc_ah);
+#else
 	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
 			      false, NULL, sc_ah);
+#endif
 	if (err) {
 		ibdev_dbg(&iwdev->ibdev, "VERBS: CQP-OP Create AH fail");
 		goto err_ah_create;
@@ -1433,7 +1496,7 @@ exit:
 		err = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp), udata->outlen));
 		if (err) {
 			if (!ah->parent_ah ||
-			    (ah->parent_ah && refcount_dec_and_test(&ah->parent_ah->refcnt))) {
+			    (ah->parent_ah && !(--ah->parent_ah->refcnt))) {
 				irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah,
 						IRDMA_OP_AH_DESTROY, false, NULL, ah);
 				ah_id = ah->sc_ah.ah_info.ah_idx;
@@ -1446,10 +1509,15 @@ exit:
 	return &ah->ibah;
 
 err_ah_create:
-	if (ah->parent_ah) {
-		hash_del(&ah->parent_ah->list);
-		kfree(ah->parent_ah);
-		iwdev->ah_list_cnt--;
+	ah->parent_ah->refcnt--;
+	if (!ah->parent_ah->refcnt) {
+		/* Last ref dropped, add to deferred delete list. */
+		list_add_tail(&ah->parent_ah->node, &iwdev->ah_nosleep_deletion_list);
+		iwdev->ah_nosleep_deletion_list_cnt++;
+		iwdev->ah_nosleep_deletion_list_cnt_total++;
+		if (iwdev->ah_nosleep_deletion_list_cnt > iwdev->ah_nosleep_deletion_list_cnt_peak)
+			iwdev->ah_nosleep_deletion_list_cnt_peak = iwdev->ah_nosleep_deletion_list_cnt;
+		ah->parent_ah->deletion_timestamp = ktime_get_raw_ns();
 	}
 err_unlock:
 	spin_unlock_irqrestore(&iwdev->ah_nosleep_tbl_lock, flags);
@@ -1609,7 +1677,7 @@ exit:
 		err = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp), udata->outlen));
 		if (err) {
 			if (!ah->parent_ah ||
-			    (ah->parent_ah && refcount_dec_and_test(&ah->parent_ah->refcnt))) {
+			    (ah->parent_ah && !(--ah->parent_ah->refcnt))) {
 				irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah,
 						IRDMA_OP_AH_DESTROY, false, NULL, ah);
 				ah_id = ah->sc_ah.ah_info.ah_idx;
@@ -1714,8 +1782,13 @@ static int irdma_create_nosleep_ah(struct ib_ah *ib_ah,
 		goto exit;
 	}
 
+#ifdef HAVE_POLL_TIMEOUT_US_ATOMIC
+	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
+			      false, irdma_gsi_ud_qp_ah_cb, sc_ah);
+#else
 	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
 			      false, NULL, sc_ah);
+#endif
 	if (err) {
 		ibdev_dbg(&iwdev->ibdev, "CQP-OP Create AH fail");
 		goto err_ah_create;
@@ -1731,7 +1804,7 @@ exit:
 		err = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp), udata->outlen));
 		if (err) {
 			if (!ah->parent_ah ||
-			    (ah->parent_ah && refcount_dec_and_test(&ah->parent_ah->refcnt))) {
+			    (ah->parent_ah && !(--ah->parent_ah->refcnt))) {
 				irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah,
 						IRDMA_OP_AH_DESTROY, false, NULL, ah);
 				ah_id = ah->sc_ah.ah_info.ah_idx;
@@ -1864,7 +1937,7 @@ exit:
 		err = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp), udata->outlen));
 		if (err) {
 			if (!ah->parent_ah ||
-			    (ah->parent_ah && refcount_dec_and_test(&ah->parent_ah->refcnt))) {
+			    (ah->parent_ah && !(--ah->parent_ah->refcnt))) {
 				irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah,
 						IRDMA_OP_AH_DESTROY, false, NULL, ah);
 				ah_id = ah->sc_ah.ah_info.ah_idx;
@@ -1979,8 +2052,13 @@ static int irdma_create_nosleep_ah(struct ib_ah *ib_ah,
 		goto exit;
 	}
 
+#ifdef HAVE_POLL_TIMEOUT_US_ATOMIC
+	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
+			      false, irdma_gsi_ud_qp_ah_cb, sc_ah);
+#else
 	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
 			      false, NULL, sc_ah);
+#endif
 	if (err) {
 		ibdev_dbg(&iwdev->ibdev, "CQP-OP Create AH fail");
 		goto err_ah_create;
@@ -1996,7 +2074,7 @@ exit:
 		err = ib_copy_to_udata(udata, &uresp, min(sizeof(uresp), udata->outlen));
 		if (err) {
 			if (!ah->parent_ah ||
-			    (ah->parent_ah && refcount_dec_and_test(&ah->parent_ah->refcnt))) {
+			    (ah->parent_ah && !(--ah->parent_ah->refcnt))) {
 				irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah,
 						IRDMA_OP_AH_DESTROY, false, NULL, ah);
 				ah_id = ah->sc_ah.ah_info.ah_idx;
@@ -2260,8 +2338,13 @@ struct ib_ah *irdma_create_ah(struct ib_pd *ibpd, struct ib_ah_attr *attr)
 	if (err)
 		goto error;
 
+#ifdef HAVE_POLL_TIMEOUT_US_ATOMIC
+	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
+			      false, irdma_gsi_ud_qp_ah_cb, sc_ah);
+#else
 	err = irdma_ah_cqp_op(iwdev->rf, sc_ah, IRDMA_OP_AH_CREATE,
 			      false, NULL, sc_ah);
+#endif
 	if (err) {
 		ibdev_dbg(&iwdev->ibdev,
 			  "VERBS: CQP-OP Create AH fail");
@@ -2299,8 +2382,12 @@ void irdma_free_qp_rsrc(struct irdma_qp *iwqp)
 					   iwqp->sc_qp.user_pri);
 	}
 
-	if (qp_num > 2)
-		irdma_free_rsrc(rf, rf->allocated_qps, qp_num);
+	if (iwqp->ibqp.qp_type == IB_QPT_GSI) {
+		irdma_free_gsi_qp_rsrc(iwqp, qp_num);
+	} else {
+		if (qp_num > 2)
+			irdma_free_rsrc(rf, rf->allocated_qps, qp_num);
+	}
 	dma_free_coherent(rf->sc_dev.hw->device, iwqp->q2_ctx_mem.size,
 			  iwqp->q2_ctx_mem.va, iwqp->q2_ctx_mem.pa);
 	iwqp->q2_ctx_mem.va = NULL;
@@ -2398,20 +2485,24 @@ int irdma_create_qp(struct ib_qp *ibqp,
 	init_info.host_ctx = (__le64 *)(init_info.q2 + IRDMA_Q2_BUF_SIZE);
 	init_info.host_ctx_pa = init_info.q2_pa + IRDMA_Q2_BUF_SIZE;
 
-	if (init_attr->qp_type == IB_QPT_GSI)
-		qp_num = 1;
-	else
+	if (init_attr->qp_type == IB_QPT_GSI) {
+		err_code = irdma_setup_gsi_qp_rsrc(iwqp, &qp_num);
+		if (err_code)
+			goto error;
+		iwqp->ibqp.qp_num = 1;
+	} else {
 		if (dev->hw_attrs.uk_attrs.hw_rev <= IRDMA_GEN_2)
 			err_code = irdma_alloc_rsrc(rf, rf->allocated_qps, rf->max_qp,
 						    &qp_num, &next_qp);
 		else
 			err_code = irdma_alloc_rsrc(rf, rf->allocated_qps, rf->max_qp,
 						    &qp_num, &rf->next_qp);
-	if (err_code)
-		goto error;
+		if (err_code)
+			goto error;
+		iwqp->ibqp.qp_num = qp_num;
+	}
 
 	iwqp->iwpd = iwpd;
-	iwqp->ibqp.qp_num = qp_num;
 	qp = &iwqp->sc_qp;
 	iwqp->iwscq = to_iwcq(init_attr->send_cq);
 	iwqp->iwrcq = to_iwcq(init_attr->recv_cq);
@@ -2489,7 +2580,16 @@ int irdma_create_qp(struct ib_qp *ibqp,
 	spin_lock_init(&iwqp->lock);
 	spin_lock_init(&iwqp->sc_qp.pfpdu.lock);
 	iwqp->sig_all = (init_attr->sq_sig_type == IB_SIGNAL_ALL_WR) ? 1 : 0;
+	init_completion(&iwqp->free_qp);
+#ifdef HAVE_XARRAY
+	err_code = xa_err(xa_store_irq(&rf->qp_xa, qp_num, iwqp, GFP_KERNEL));
+	if (err_code) {
+		kc_irdma_destroy_qp(&iwqp->ibqp, udata);
+		goto error;
+	}
+#else
 	rf->qp_table[qp_num] = iwqp;
+#endif /* HAVE_XARRAY */
 
 	if (rdma_protocol_roce(&iwdev->ibdev, 1)) {
 		if (dev->ws_add(&iwdev->vsi, 0)) {
@@ -2528,14 +2628,14 @@ int irdma_create_qp(struct ib_qp *ibqp,
 			return err_code;
 		}
 	}
-
-	init_completion(&iwqp->free_qp);
 #ifndef RHEL_7_2
+
 	if (dev->hw_wa & NO_STAG0 && qp_num == 1) {
 		ibpd->flags |= IB_PD_UNSAFE_GLOBAL_RKEY;
 		iwqp->iwmr = (struct irdma_mr *)wa_reg_phys_mr(ibpd);
 	}
 #endif /* RHEL_7_2 */
+
 	return 0;
 
 error:
@@ -2563,8 +2663,12 @@ void irdma_free_qp_rsrc(struct irdma_qp *iwqp)
 					   iwqp->sc_qp.user_pri);
 	}
 
-	if (qp_num > 2)
-		irdma_free_rsrc(rf, rf->allocated_qps, qp_num);
+	if (iwqp->ibqp.qp_type == IB_QPT_GSI) {
+		irdma_free_gsi_qp_rsrc(iwqp, qp_num);
+	} else {
+		if (qp_num > 2)
+			irdma_free_rsrc(rf, rf->allocated_qps, qp_num);
+	}
 	dma_free_coherent(rf->sc_dev.hw->device, iwqp->q2_ctx_mem.size,
 			  iwqp->q2_ctx_mem.va, iwqp->q2_ctx_mem.pa);
 	iwqp->q2_ctx_mem.va = NULL;
@@ -2669,20 +2773,24 @@ struct ib_qp *irdma_create_qp(struct ib_pd *ibpd,
 	init_info.host_ctx = (__le64 *)(init_info.q2 + IRDMA_Q2_BUF_SIZE);
 	init_info.host_ctx_pa = init_info.q2_pa + IRDMA_Q2_BUF_SIZE;
 
-	if (init_attr->qp_type == IB_QPT_GSI)
-		qp_num = 1;
-	else
+	if (init_attr->qp_type == IB_QPT_GSI) {
+		err_code = irdma_setup_gsi_qp_rsrc(iwqp, &qp_num);
+		if (err_code)
+			goto error;
+		iwqp->ibqp.qp_num = 1;
+	} else {
 		if (dev->hw_attrs.uk_attrs.hw_rev <= IRDMA_GEN_2)
 			err_code = irdma_alloc_rsrc(rf, rf->allocated_qps, rf->max_qp,
 						    &qp_num, &next_qp);
 		else
 			err_code = irdma_alloc_rsrc(rf, rf->allocated_qps, rf->max_qp,
 						    &qp_num, &rf->next_qp);
-	if (err_code)
-		goto error;
+		if (err_code)
+			goto error;
+		iwqp->ibqp.qp_num = qp_num;
+	}
 
 	iwqp->iwpd = iwpd;
-	iwqp->ibqp.qp_num = qp_num;
 	qp = &iwqp->sc_qp;
 	iwqp->iwscq = to_iwcq(init_attr->send_cq);
 	iwqp->iwrcq = to_iwcq(init_attr->recv_cq);
@@ -2760,7 +2868,16 @@ struct ib_qp *irdma_create_qp(struct ib_pd *ibpd,
 	spin_lock_init(&iwqp->lock);
 	spin_lock_init(&iwqp->sc_qp.pfpdu.lock);
 	iwqp->sig_all = (init_attr->sq_sig_type == IB_SIGNAL_ALL_WR) ? 1 : 0;
+	init_completion(&iwqp->free_qp);
+#ifdef HAVE_XARRAY
+	err_code = xa_err(xa_store_irq(&rf->qp_xa, qp_num, iwqp, GFP_KERNEL));
+	if (err_code) {
+		kc_irdma_destroy_qp(&iwqp->ibqp, udata);
+		goto error;
+	}
+#else
 	rf->qp_table[qp_num] = iwqp;
+#endif /* HAVE_XARRAY */
 
 	if (rdma_protocol_roce(&iwdev->ibdev, 1)) {
 		if (dev->ws_add(&iwdev->vsi, 0)) {
@@ -2799,14 +2916,14 @@ struct ib_qp *irdma_create_qp(struct ib_pd *ibpd,
 			return ERR_PTR(err_code);
 		}
 	}
-
-	init_completion(&iwqp->free_qp);
 #ifndef RHEL_7_2
+
 	if (dev->hw_wa & NO_STAG0 && qp_num == 1) {
 		ibpd->flags |= IB_PD_UNSAFE_GLOBAL_RKEY;
 		iwqp->iwmr = (struct irdma_mr *)wa_reg_phys_mr(ibpd);
 	}
 #endif /* RHEL_7_2 */
+
 	return &iwqp->ibqp;
 
 error:
@@ -2830,10 +2947,17 @@ int irdma_destroy_qp(struct ib_qp *ibqp)
 {
 	struct irdma_qp *iwqp = to_iwqp(ibqp);
 	struct irdma_device *iwdev = iwqp->iwdev;
+	int status;
 
 	if (iwqp->sc_qp.qp_uk.destroy_pending)
 		goto free_rsrc;
 	iwqp->sc_qp.qp_uk.destroy_pending = true;
+
+	/* Decrement RoCE RTS QP count if it was incremented */
+	if (irdma_is_e830(&iwdev->rf->sc_dev) && iwqp->roce_rts_cnt_incr) {
+		iwqp->roce_rts_cnt_incr = false;
+		atomic_dec(&iwdev->rf->roce_rts_qp_cnt);
+	}
 
 	if (iwqp->iwarp_state >= IRDMA_QP_STATE_IDLE)
 		irdma_modify_qp_to_err(&iwqp->sc_qp);
@@ -2849,10 +2973,18 @@ int irdma_destroy_qp(struct ib_qp *ibqp)
 			cancel_delayed_work_sync(&iwqp->dwork_flush);
 	}
 	irdma_qp_rem_ref(&iwqp->ibqp);
-	wait_for_completion(&iwqp->free_qp);
+	if (!iwdev->rf->reset)
+		wait_for_completion(&iwqp->free_qp);
 	irdma_free_lsmm_rsrc(iwqp);
-	if (!iwdev->rf->reset && irdma_cqp_qp_destroy_cmd(&iwdev->rf->sc_dev, &iwqp->sc_qp))
-		return (iwdev->rf->rdma_ver <= IRDMA_GEN_2 && !iwqp->user_mode) ? 0 : -ENOTRECOVERABLE;
+	status = irdma_cqp_qp_destroy_cmd(&iwdev->rf->sc_dev, &iwqp->sc_qp);
+	if (status && !iwdev->rf->reset) {
+		if (iwdev->rf->rdma_ver <= IRDMA_GEN_2 && !iwqp->user_mode) {
+			iwdev->rf->destroy_qp_fail = true;
+			return 0;
+		}
+
+		return -ENOTRECOVERABLE;
+	}
 free_rsrc:
 	irdma_remove_push_mmap_entries(iwqp);
 	irdma_free_qp_rsrc(iwqp);
@@ -3193,7 +3325,7 @@ bool kc__rdma_block_iter_next(struct kc_ib_block_iter *biter)
 
 #ifdef COPY_USER_PGADDR_VER_1
 void irdma_copy_user_pgaddrs(struct irdma_mr *iwmr, u64 *pbl,
-			     enum irdma_pble_level level)
+			     u32 pbl_len, enum irdma_pble_level level)
 {
 	struct ib_umem *region = iwmr->region;
 	struct irdma_pbl *iwpbl = &iwmr->iwpbl;
@@ -3203,7 +3335,9 @@ void irdma_copy_user_pgaddrs(struct irdma_mr *iwmr, u64 *pbl,
 	struct irdma_pble_alloc *palloc = &iwpbl->pble_alloc;
 	struct irdma_pble_info *pinfo;
 	u32 idx = 0;
-	u32 pbl_cnt = 0;
+
+	if (!pbl_len)
+		return;
 
 	pinfo = (level == PBLE_LEVEL_1) ? NULL : palloc->level2.leaf;
 	for_each_sg(region->sg_head.sgl, sg, region->nmap, entry) {
@@ -3218,13 +3352,86 @@ void irdma_copy_user_pgaddrs(struct irdma_mr *iwmr, u64 *pbl,
 				*pbl = pg_addr;
 			else
 				continue;
-			if (++pbl_cnt == palloc->total_cnt)
-				break;
+			if (!--pbl_len)
+				return;
 			pbl = irdma_next_pbl_addr(pbl, &pinfo, &idx);
 		}
 	}
 }
 #endif
+
+static void irdma_destroy_sleepable_ah_delete(struct irdma_device *iwdev,
+					      struct irdma_ah *ah)
+{
+	int status;
+
+	mutex_lock(&iwdev->ah_tbl_lock);
+	ah->parent_ah->refcnt--;
+	if (!ah->parent_ah->refcnt) {
+		if (ah_deferred_delete) {
+			/* Last ref dropped, add to deferred delete list. */
+			list_add_tail(&ah->parent_ah->node, &iwdev->ah_deletion_list);
+			iwdev->ah_deletion_list_cnt++;
+			iwdev->ah_deletion_list_cnt_total++;
+			if (iwdev->ah_deletion_list_cnt > iwdev->ah_deletion_list_cnt_peak)
+				iwdev->ah_deletion_list_cnt_peak = iwdev->ah_deletion_list_cnt;
+			ah->parent_ah->deletion_timestamp = ktime_get_raw_ns();
+		} else {
+			status = irdma_ah_cqp_op(iwdev->rf, &ah->parent_ah->sc_ah, IRDMA_OP_AH_DESTROY,
+						 false, NULL, ah->parent_ah);
+			if (status) {
+				mutex_unlock(&iwdev->ah_tbl_lock);
+				return;
+			}
+
+			irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_ahs,
+					ah->parent_ah->sc_ah.ah_info.ah_idx);
+
+			hash_del(&ah->parent_ah->list);
+			iwdev->ah_list_cnt--;
+			kfree(ah->parent_ah);
+		}
+	}
+	mutex_unlock(&iwdev->ah_tbl_lock);
+}
+
+static void irdma_destroy_nosleep_ah_delete(struct irdma_device *iwdev,
+					   struct irdma_ah *ah)
+{
+	unsigned long flags;
+	int status;
+
+	spin_lock_irqsave(&iwdev->ah_nosleep_tbl_lock, flags);
+	ah->parent_ah->refcnt--;
+	if (!ah->parent_ah->refcnt) {
+		if (ah_deferred_delete) {
+			/* Last ref dropped, add to deferred delete list. */
+			list_add_tail(&ah->parent_ah->node, &iwdev->ah_nosleep_deletion_list);
+			iwdev->ah_nosleep_deletion_list_cnt++;
+			iwdev->ah_nosleep_deletion_list_cnt_total++;
+			if (iwdev->ah_nosleep_deletion_list_cnt > iwdev->ah_nosleep_deletion_list_cnt_peak)
+				iwdev->ah_nosleep_deletion_list_cnt_peak = iwdev->ah_nosleep_deletion_list_cnt;
+			ah->parent_ah->deletion_timestamp = ktime_get_raw_ns();
+			spin_unlock_irqrestore(&iwdev->ah_nosleep_tbl_lock, flags);
+		} else {
+			struct irdma_ah *parent = ah->parent_ah;
+
+			hash_del(&parent->list);
+			iwdev->ah_nosleep_list_cnt--;
+			spin_unlock_irqrestore(&iwdev->ah_nosleep_tbl_lock, flags);
+
+			status = irdma_ah_cqp_op(iwdev->rf, &parent->sc_ah, IRDMA_OP_AH_DESTROY,
+						 false, NULL, parent);
+			if (!status)
+				irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_ahs,
+						parent->sc_ah.ah_info.ah_idx);
+
+			kfree(parent);
+		}
+	} else {
+		spin_unlock_irqrestore(&iwdev->ah_nosleep_tbl_lock, flags);
+	}
+}
 
 /**
  * irdma_destroy_ah - Destroy address handle
@@ -3237,14 +3444,13 @@ int irdma_destroy_ah(struct ib_ah *ibah, u32 ah_flags)
 	struct irdma_device *iwdev = to_iwdev(ibah->device);
 	struct irdma_ah *ah = to_iwah(ibah);
 
-	if (!irdma_ah_hash_delete(iwdev, ah))
-		return 0;
+	if (!ah->parent_ah)
+		BUG();
 
-	irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah, IRDMA_OP_AH_DESTROY,
-			false, NULL, ah);
-
-	irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_ahs,
-			ah->sc_ah.ah_info.ah_idx);
+	if (ah->sleep)
+		irdma_destroy_sleepable_ah_delete(iwdev, ah);
+	else
+		irdma_destroy_nosleep_ah_delete(iwdev, ah);
 
 	return 0;
 }
@@ -3370,6 +3576,7 @@ struct ib_mr *irdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 len,
 				u64 virt, int access,
 				struct ib_dmah *dmah,
 				struct ib_udata *udata)
+{
 #else
 /**
  * irdma_reg_user_mr - Register a user memory region
@@ -3383,8 +3590,8 @@ struct ib_mr *irdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 len,
 struct ib_mr *irdma_reg_user_mr(struct ib_pd *pd, u64 start, u64 len,
 				u64 virt, int access,
 				struct ib_udata *udata)
-#endif
 {
+#endif
 #define IRDMA_MEM_REG_MIN_REQ_LEN offsetofend(struct irdma_mem_reg_req, sq_pages)
 	struct irdma_device *iwdev = to_iwdev(pd->device);
 	struct irdma_mem_reg_req req = {};

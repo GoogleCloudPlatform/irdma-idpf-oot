@@ -78,15 +78,53 @@ function find-decl() {
 	what="$1"
 	end="$2"
 	shift 2
+	files=("$@")
+	addtl_files=()
+	if [ ! -z "${KSRC_ADDTL-}" ]; then
+		for file in "${files[@]}"; do
+			if [[ "${file}" == "-" ]];then
+				continue
+			fi
+			if [ ! -e "${file}" ]; then
+				# file does not exist in compat, need to look for it in the kernel source
+				addtl_files+=("${KSRC_ADDTL-}/${file}")
+			elif grep -q "include_next" "${file}"; then
+				# file exists in compat, but includes the original hdr via include_next
+				addtl_files+=("${KSRC_ADDTL-}/${file}")
+			fi
+		done
+	fi
 	files="$(filter-out-bad-files "$@")" || die
+	if [ ${#addtl_files[@]} -ne 0 ]; then
+		addtl_files="$(filter-out-bad-files "${addtl_files[@]}")" || die
+		if [ -z "${files}" ] && [ -z "${addtl_files}" ]; then
+			return 0;
+		fi
+		files="${files} ${addtl_files}"
+	fi
 	if [ -z "$files" ]; then
 		return 0
 	fi
-	# shellcheck disable=SC2086
-	awk "
-		/^$WB*\*/ {next}
-		$what, $end
-	" $files
+	# if user wants to preprocess the file to exclude false positives,
+	# use unifdef to preprocess only when unifdef is available
+	if [[ -n "${PREPROCESS_UNIFDEF}" ]] && command -v unifdef >/dev/null 2>&1; then
+		for f in $files; do
+			if [[ "$f" == "-" ]]; then
+				cat -
+			else
+				unifdef -k -t ${PREPROCESS_UNIFDEF} "$f" 2>/dev/null || [ $? -le 1 ]
+			fi
+		done | awk "
+			/^$WB*\*/ {next}
+			$what, $end
+		"
+	else
+		# shellcheck disable=SC2086
+		awk "
+			/^$WB*\*/ {next}
+			$what, $end
+		" $files
+	fi
 }
 
 # yield $1 function declaration (signature), don't pass return type in $1
@@ -281,7 +319,7 @@ function gen() {
 		shift 3
 
 		if [ -z ${UNIFDEF_MODE:+1} ]; then
-			found_fmt="#define %s 1\n"
+			found_fmt="#ifndef %s\n#define %s 1\n#endif\n"
 			missing_fmt=""
 		else
 			found_fmt="-D%s\n"
@@ -289,7 +327,7 @@ function gen() {
 		fi
 
 		if [ "${actual_str}" = "${expect_str}" ]; then
-			printf -- "$found_fmt" "$define"
+			printf -- "$found_fmt" "$define" "$define"
 		else
 			printf -- "$missing_fmt" "$define"
 		fi
@@ -416,12 +454,12 @@ function gen() {
 				found_fmt="-D%s\n"
 				missing_fmt="-U%s\n"
 			} else {
-				found_fmt="#define %s 1\n"
+				found_fmt="#ifndef %s\n#define %s 1\n#endif\n"
 				missing_fmt=""
 			}
 
 			if (lacks && !found && not_empty || matches && found || absent && !found)
-				printf(found_fmt, define)
+				printf(found_fmt, define, define)
 			else if (missing_fmt)
 				printf(missing_fmt, define)
 		}

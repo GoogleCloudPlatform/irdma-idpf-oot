@@ -3,6 +3,14 @@
 #ifndef LINUX_KCOMPAT_H
 #define LINUX_KCOMPAT_H
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)
+#define HAVE_XARRAY
+#endif
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+#define HAVE_POLL_TIMEOUT_US_ATOMIC
+#endif
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
 #define REG_USER_MR_VER_2
 #else
@@ -442,6 +450,8 @@ void irdma_dealloc_pd(struct ib_pd *ibpd);
 /* IRDMA_AUX_GET_SET_DRV_DATA */
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)) && \
 (LINUX_VERSION_CODE < KERNEL_VERSION(5, 17, 0))
+#ifndef HAVE_AUXILIARY_GET_SET_DRV_DATA
 #define IRDMA_AUX_GET_SET_DRV_DATA
+#endif
 #endif
 #endif /* LINUX_KCOMPAT_H */

@@ -24,7 +24,6 @@
 #include "virtchnl2_lan_desc.h"
 
 #define idpf_tx_buf_next(buf)      (*(u32 *)&(buf)->priv)
-#define idpf_tx_buf_compl_tag(buf)      (*(u32 *)&(buf)->priv)
 LIBETH_SQE_CHECK_PRIV(u32);
 
 #define IDPF_LARGE_MAX_Q			256
@@ -79,7 +78,10 @@ LIBETH_SQE_CHECK_PRIV(u32);
 /* Default vector sharing */
 #define IDPF_MBX_Q_VEC		1
 #define IDPF_MIN_Q_VEC		1
-#define IDPF_MIN_RDMA_VEC	2 /* Minimum vectors to be shared with RDMA */
+#define IDPF_MIN_RDMA_VEC	2
+#ifdef CONFIG_RCA_SUPPORT
+#define IDPF_MIN_RCA_VEC	1
+#endif /* CONFIG_RCA_SUPPORT */
 
 #define IDPF_DFLT_TX_Q_DESC_COUNT		512
 #define IDPF_DFLT_TX_COMPLQ_DESC_COUNT		512
@@ -1059,6 +1061,21 @@ static inline __le64 idpf_tx_singleq_build_ctob(u64 td_cmd, u64 td_offset,
 			   (td_offset << IDPF_TXD_QW1_OFFSET_S) |
 			   ((u64)size << IDPF_TXD_QW1_TX_BUF_SZ_S) |
 			   (td_tag << IDPF_TXD_QW1_L2TAG1_S));
+}
+
+/**
+ * idpf_tx_splitq_need_re - check whether RE bit needs to be set
+ * @tx_q: the tx ring to verify
+ *
+ * Return: true if RE bit needs to be set, false otherwise
+ */
+static inline bool idpf_tx_splitq_need_re(struct idpf_queue *tx_q)
+{
+	int gap = tx_q->next_to_use - tx_q->tx.last_re;
+
+	gap += (gap < 0) ? tx_q->desc_count : 0;
+
+	return gap >= IDPF_TX_SPLITQ_RE_MIN_GAP;
 }
 
 /**

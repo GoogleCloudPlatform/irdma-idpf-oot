@@ -1,0 +1,19 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@ --with dkms
+
+override_dh_auto_build:
+	# No build step needed for DKMS source delivery
+
+override_dh_auto_install:
+	# Create the DKMS source directory
+	mkdir -p debian/idpf-dkms/usr/src/idpf-2.9.0
+	rsync -av --exclude 'debian' ./ debian/idpf-dkms/usr/src/idpf-2.9.0/
+	
+	# Setup depmod.d override
+	mkdir -p debian/idpf-dkms/etc/depmod.d/
+	echo "override idpf * extra" >> debian/idpf-dkms/etc/depmod.d/idpf.conf
+
+override_dh_dkms:
+	dh_dkms -v

@@ -258,3 +258,36 @@ void ig3rdma_init_hw(struct irdma_sc_dev *dev)
 	dev->hw_attrs.max_hw_device_pages =
 		dev->is_pf ? IG3RDMA_MAX_PF_PUSH_PAGE_COUNT : IG3RDMA_MAX_VF_PUSH_PAGE_COUNT;
 }
+
+
+static void __iomem *__ig3rdma_get_reg_addr(struct irdma_mmio_region *region, u64 reg_offset)
+{
+	if (reg_offset >= region->offset &&
+	    reg_offset < (region->offset + region->len)) {
+		reg_offset -= region->offset;
+
+		return region->addr + reg_offset;
+	}
+
+	return NULL;
+}
+
+void __iomem *ig3rdma_get_reg_addr(struct irdma_hw *hw, u64 reg_offset)
+{
+	u8 __iomem *reg_addr;
+	int i;
+
+	reg_addr = __ig3rdma_get_reg_addr(&hw->rdma_reg, reg_offset);
+	if (reg_addr)
+		return reg_addr;
+
+	for (i = 0; i < hw->num_io_regions; i++) {
+		reg_addr = __ig3rdma_get_reg_addr(&hw->io_regs[i], reg_offset);
+		if (reg_addr)
+			return reg_addr;
+	}
+
+	WARN_ON_ONCE(1);
+
+	return NULL;
+}

@@ -5,6 +5,7 @@
 
 #include "defs.h"
 
+#define IRDMA_HMC_XF_SIZE_MULTIPLIER		128
 #define IRDMA_HMC_MAX_BP_COUNT			512
 #define IRDMA_MAX_SD_ENTRIES			11
 #define IRDMA_HW_DBG_HMC_INVALID_BP_MARK	0xca

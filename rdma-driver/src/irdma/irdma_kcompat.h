@@ -26,6 +26,9 @@
 #include <asm/io.h>
 #include <linux/ethtool.h>
 #include <linux/if_vlan.h>
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0)
+#include <linux/iopoll.h>
+#endif
 #include <net/ipv6.h>
 #include <net/ip6_route.h>
 #include <net/route.h>
@@ -47,13 +50,19 @@
 #endif
 
 #include "irdma-abi.h"
-#if !defined(__OFED_BUILD__) && !defined(__OFED_4_8__)
+// For DOCA-OFED, still include irdma kcompat for optimal build
+#if (!defined(__OFED_BUILD__) && !defined(__OFED_4_8__)) ||                    \
+    defined(__DOCA_OFED__)
 #include "irdma_kcompat_gen.h"
 #endif
 #include "distro_ver.h"
 
 #if defined(__OFED_BUILD__) || defined(__OFED_4_8__)
+#if defined(__DOCA_OFED__)
+#include "doca_ofed_kcompat.h"
+#else
 #include "ofed_kcompat.h"
+#endif
 #elif defined(RHEL_RELEASE_CODE)
 #include "rhel_kcompat.h"
 #elif defined(CONFIG_SUSE_KERNEL)
@@ -669,7 +678,7 @@ kc__rdma_umem_block_iter_next(struct kc_ib_block_iter *biter)
 
 #ifdef COPY_USER_PGADDR_VER_1
 void irdma_copy_user_pgaddrs(struct irdma_mr *iwmr, u64 *pbl,
-			     enum irdma_pble_level level);
+			     u32 pbl_len, enum irdma_pble_level level);
 #endif
 
 void irdma_del_memlist(struct irdma_mr *iwmr,

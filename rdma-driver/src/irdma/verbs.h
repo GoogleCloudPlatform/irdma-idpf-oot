@@ -82,9 +82,11 @@ struct irdma_ah {
 	u8 sgid_index;
 	union ib_gid dgid;
 	struct hlist_node list;
-	refcount_t refcnt;
+	u64 refcnt;
 	struct irdma_ah *parent_ah;	/* AH from cached list */
 	bool sleep;
+	struct list_head node;
+	u64 deletion_timestamp;
 };
 
 struct irdma_hmc_pble {
@@ -287,6 +289,7 @@ struct irdma_qp {
 	bool sig_all:1;
 	bool pau_mode:1;
 	bool suspend_pending:1;
+	bool roce_rts_cnt_incr:1;
 };
 
 struct irdma_mmap_info {
@@ -370,6 +373,14 @@ static inline u16 irdma_fw_major_ver(struct irdma_sc_dev *dev)
 static inline u16 irdma_fw_minor_ver(struct irdma_sc_dev *dev)
 {
 	return (u16)FIELD_GET(IRDMA_FW_VER_MINOR, dev->feature_info[IRDMA_FEATURE_FW_INFO]);
+}
+
+static inline bool irdma_is_e830(struct irdma_sc_dev *dev)
+{
+	if (dev->hw_attrs.uk_attrs.hw_rev == IRDMA_GEN_2 && irdma_fw_major_ver(dev) > 1)
+		return true;
+	else
+		return false;
 }
 
 static inline void set_ib_wc_op_sq(struct irdma_cq_poll_info *cq_poll_info,

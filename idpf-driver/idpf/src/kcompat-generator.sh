@@ -83,7 +83,11 @@ function gen-cleanup() {
 	rcuh='include/linux/rcupdate.h'
 	gen NEED_DEFINE_FREE if macro DEFINE_FREE absent in "$ch"
 	gen NEED___DEFINE_CLASS_IS_CONDITIONAL if macro __DEFINE_CLASS_IS_CONDITIONAL absent in "$ch"
-	gen NEED_DEFINE_GUARD_MUTEX if invocation of macro DEFINE_GUARD absent or lacks mutex_lock in "$mh"
+	# Check for mutex guards in both old and new APIs
+	HAVE_MUTEX_GUARDS=0
+	check invocation of macro DEFINE_LOCK_GUARD_1 matches mutex in "$mh" && HAVE_MUTEX_GUARDS=1
+	check invocation of macro DEFINE_GUARD matches mutex in "$mh" && HAVE_MUTEX_GUARDS=1
+	gen NEED_DEFINE_GUARD_MUTEX if string "$HAVE_MUTEX_GUARDS" equals 0
 	gen NEED_LOCK_GUARD_FOR_RCU if invocation of macro DEFINE_LOCK_GUARD_0 absent or lacks rcu in "$rcuh"
 	gen NEED_DEFINE_FREE_KFREE if invocation of macro DEFINE_FREE absent or lacks kfree in "$slabh"
 	gen NEED_DEFINE_FREE_KVFREE if invocation of macro DEFINE_FREE absent or lacks kvfree in "$slabh"
@@ -183,6 +187,7 @@ function gen-dpll() {
 	gen HAVE_DPLL_PHASE_OFFSET if method phase_offset_get of dpll_pin_ops in "$dh"
 	gen HAVE_DPLL_PHASE_OFFSET_MONITOR if method phase_offset_monitor_set of dpll_device_ops in "$dh"
 	gen NEED_DPLL_NETDEV_PIN_SET if fun dpll_netdev_pin_set absent in "$dh"
+	gen NEED_DPLL_TRACKER if typedef dpll_tracker absent in "$dh"
 }
 
 function gen-ethtool() {
@@ -379,7 +384,10 @@ function gen-packing() {
 }
 
 function gen-pci() {
+	ioporth='include/linux/ioport.h'
 	pcih='include/linux/pci.h'
+	gen HAVE_RESOURCE_SET_RANGE if fun resource_set_range in "$ioporth"
+	gen HAVE_RESOURCE_SET_SIZE if fun resource_set_size in "$ioporth"
 	gen HAVE_PCI_MSIX_ALLOC_IRQ_AT if fun pci_msix_alloc_irq_at in "$pcih"
 	gen HAVE_PCI_MSIX_CAN_ALLOC_DYN if fun pci_msix_can_alloc_dyn in "$pcih"
 	gen HAVE_PCI_MSIX_FREE_IRQ if fun pci_msix_free_irq in "$pcih"
@@ -404,6 +412,7 @@ function gen-ptp() {
 	gen HAVE_PTP_CANCEL_WORKER_SYNC if fun ptp_cancel_worker_sync in "$clockh"
 	gen HAVE_PTP_CLOCK_DO_AUX_WORK if method do_aux_work of ptp_clock_info in "$clockh"
 	gen HAVE_PTP_CLOCK_INFO_ADJFINE if method adjfine of ptp_clock_info in "$clockh"
+	gen HAVE_PTP_CLOCK_INFO_GETCYCLES64 if method getcycles64 of ptp_clock_info in "$clockh"
 	gen HAVE_PTP_CLOCK_INFO_GETTIME64 if method gettime64 of ptp_clock_info in "$clockh"
 	gen HAVE_PTP_CLOCK_INFO_GETTIMEX64 if method gettimex64 of ptp_clock_info in "$clockh"
 	gen HAVE_PTP_FIND_PIN_UNLOCKED if fun ptp_find_pin_unlocked in "$clockh"
@@ -525,8 +534,9 @@ function gen-other() {
 	gen HAVE_MDEV_GET_DRVDATA if fun mdev_get_drvdata in include/linux/mdev.h
 	gen HAVE_MDEV_REGISTER_PARENT if fun mdev_register_parent in include/linux/mdev.h
 	gen HAVE_VM_FLAGS_API if fun vm_flags_init in include/linux/mm.h
+	gen NEED_MODULE_INFO_WITHOUT_CHECK if implementation of macro MODULE_INFO matches __builtin_strlen in include/linux/moduleparam.h
 	gen HAVE_NL_SET_ERR_MSG_FMT if macro NL_SET_ERR_MSG_FMT in include/linux/netlink.h
-	gen NEED_DEFINE_SIMPLE_DEV_OPS if macro DEFINE_SIMPLE_DEV_OPS absent in include/linux/pm.h
+	gen NEED_DEFINE_SIMPLE_DEV_PM_OPS if macro DEFINE_SIMPLE_DEV_PM_OPS absent in include/linux/pm.h
 	gen NEED_PM_SLEEP_PTR if macro pm_sleep_ptr absent in include/linux/pm.h
 	gen NEED_DEV_PM_DOMAIN_ATTACH if fun dev_pm_domain_attach absent in include/linux/pm_domain.h include/linux/pm.h
 	gen NEED_DEV_PM_DOMAIN_DETACH if fun dev_pm_domain_detach absent in include/linux/pm_domain.h include/linux/pm.h

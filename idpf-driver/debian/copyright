@@ -1,0 +1,25 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: idpf
+Upstream-Contact: Intel Corporation <support.intel.com>
+Source: http://support.intel.com
+
+Files: *
+Copyright: 2017-2023 Intel Corporation <support.intel.com>
+License: GPL-2
+
+Files: debian/*
+Copyright:  2026 Google LLC
+License: GPL-2
+
+License: GPL-2
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; version 2 of the License.
+ .
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ GNU General Public License for more details.
+ .
+ On Debian systems, the full text of the GNU General Public License 
+ version 2 can be found in the file `/usr/share/common-licenses/GPL-2'.

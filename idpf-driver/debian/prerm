@@ -1,0 +1,35 @@
+#!/bin/sh
+set -e
+
+# Variable for our package
+NAME="idpf-dkms"
+VERSION="2.9.0"
+
+case "$1" in
+    remove|deconfigure)
+        # 1. Clean up the PCI modifications folder if you created one
+        rm -rf /usr/local/share/$NAME
+
+        # 2. DKMS removal
+        # We only remove the module if this is a genuine 'remove', 
+        # not during an 'upgrade'.
+        if [ -x /usr/sbin/dkms ]; then
+            echo "Removing $NAME version $VERSION from DKMS..."
+        fi
+    ;;
+
+    upgrade|failed-upgrade)
+        # Do nothing during upgrades; the new version's postinst 
+        # will handle the transition.
+        ;;
+
+    *)
+        echo "prerm called with unknown argument \`$1'" >&2
+        exit 1
+    ;;
+esac
+
+# This macro is required for debhelper to insert its own cleanup code
+#DEBHELPER#
+
+exit 0

@@ -1,3 +1,6 @@
+ifneq (${USE_CROSS_COMPILE},)
+CC              = $(CROSS_COMPILE)cc
+endif
 # SPDX-License-Identifier: GPL-2.0 or Linux-OpenIB
 # Copyright (c) 2015 - 2023 Intel Corporation
 # Makefile for the Intel(R) Ethernet Protocol Driver for RDMA
@@ -31,9 +34,12 @@ irdma-objs := main.o      \
 	      i40iw_hw.o  \
 	      ig3rdma_hw.o \
 	      icrdma_hw.o \
+	      icrdma_if.o \
+	      ig3rdma_if.o \
 	      configfs.o  \
 	      virtchnl.o  \
 	      irdma_kcompat.o \
-	      debugfs.o
+	      debugfs.o \
+	      telemetry.o
 
 CFLAGS_trace.o = -I$(src)

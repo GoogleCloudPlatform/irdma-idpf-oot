@@ -1387,6 +1387,7 @@ int __kc_pci_vfs_assigned(struct pci_dev __maybe_unused *dev)
 #endif /* CONFIG_PCI_IOV */
 #endif /* 3.10.0 */
 
+#ifndef pcie_link_speed
 static const unsigned char __maybe_unused pcie_link_speed[] = {
 	PCI_SPEED_UNKNOWN,      /* 0 */
 	PCIE_SPEED_2_5GT,       /* 1 */
@@ -1405,6 +1406,7 @@ static const unsigned char __maybe_unused pcie_link_speed[] = {
 	PCI_SPEED_UNKNOWN,      /* E */
 	PCI_SPEED_UNKNOWN       /* F */
 };
+#endif
 
 /*****************************************************************************/
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(3,12,0) )
@@ -2697,3 +2699,62 @@ void pci_disable_ptm(struct pci_dev *dev)
 #endif /* HAVE_STRUCT_PCI_DEV_PTM_ENABLED && CONFIG_PCIE_PTM */
 }
 #endif /* NEED_PCI_DISABLE_PTM */
+
+#ifndef HAVE_RESOURCE_SET_SIZE
+/**
+ * resource_set_size - Calculate resource end address from size and start
+ * @res: Resource descriptor
+ * @size: Size of the resource
+ *
+ * Calculate the end address for @res based on @size.
+ *
+ * Note: The start address of @res must be set when calling this function.
+ * Prefer resource_set_range() if setting both the start address and @size.
+ */
+void resource_set_size(struct resource *res, resource_size_t size)
+{
+	res->end = res->start + size - 1;
+}
+#endif /* !HAVE_RESOURCE_SET_SIZE */
+
+#ifndef HAVE_RESOURCE_SET_RANGE
+/**
+ * resource_set_range - Set resource start and end addresses
+ * @res: Resource descriptor
+ * @start: Start address for the resource
+ * @size: Size of the resource
+ *
+ * Set @res start address and calculate the end address based on @size.
+ */
+void resource_set_range(struct resource *res, resource_size_t start,
+			resource_size_t size)
+{
+	res->start = start;
+	resource_set_size(res, size);
+}
+#endif /* !HAVE_RESOURCE_SET_RANGE */
+
+/*****************************************************************************/
+
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5,18,0))
+#include <linux/cpumask.h>
+#include <linux/topology.h>
+#include <linux/crash_dump.h>
+
+int _kc_netif_get_num_default_rss_queues(void) {
+	cpumask_var_t cpus;
+	int cpu, count = 0;
+
+	if (unlikely(is_kdump_kernel() || !zalloc_cpumask_var(&cpus, GFP_KERNEL)))
+		return 1;
+
+	cpumask_copy(cpus, cpu_online_mask);
+	for_each_cpu(cpu, cpus) {
+		++count;
+		cpumask_andnot(cpus, cpus, topology_sibling_cpumask(cpu));
+	}
+	free_cpumask_var(cpus);
+
+	return count > 2 ? DIV_ROUND_UP(count, 2) : count;
+}
+#endif

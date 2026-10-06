@@ -8,6 +8,12 @@ ifneq ($(KERNELRELEASE),)
 # Makefile for Intel(R) Infrastructure Data Path Function Linux Driver
 #
 
+LINUXINCLUDE := ${KCONF_HDR} \
+	${AUTOCONF_HDR} \
+	${MLNX_COMPAT_HDRS} \
+	${UTSRELEASE_HDR} \
+	${LINUXINCLUDE}
+
 obj-$(CONFIG_IDPF) += idpf.o
 
 idpf-y := \
@@ -15,13 +21,13 @@ idpf-y := \
 	idpf_controlq_setup.o	\
 	idpf_dev.o		\
 	idpf_ethtool.o		\
+	idpf_idc.o		\
 	idpf_lib.o		\
 	idpf_main.o		\
 	idpf_txrx.o		\
 	idpf_virtchnl.o 	\
 	idpf_singleq_txrx.o \
 	idpf_controlq.o \
-	idpf_idc.o \
 	idpf_xsk.o \
 	idpf_vf_dev.o
 idpf-$(CONFIG_PTP_1588_CLOCK:m=y) += idpf_ptp.o idpf_virtchnl_ptp.o

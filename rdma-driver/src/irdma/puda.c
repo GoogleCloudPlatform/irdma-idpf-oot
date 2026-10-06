@@ -752,7 +752,7 @@ static int irdma_puda_cq_wqe(struct irdma_sc_dev *dev, struct irdma_sc_cq *cq)
 		return -ENOMEM;
 
 	set_64bit_val(wqe, 0, cq->cq_uk.cq_size);
-	set_64bit_val(wqe, 8, RS_64_1(cq, 1));
+	set_64bit_val(wqe, 8, cq->cq_uk.cq_id);
 	set_64bit_val(wqe, 16,
 		      FIELD_PREP(IRDMA_CQPSQ_CQ_SHADOW_READ_THRESHOLD, cq->shadow_read_threshold));
 	set_64bit_val(wqe, 32, cq->cq_pa);
@@ -792,6 +792,7 @@ static int irdma_puda_cq_create(struct irdma_puda_rsrc *rsrc)
 	struct irdma_dma_mem *mem;
 	struct irdma_cq_init_info info = {};
 	struct irdma_cq_uk_init_info *init_info = &info.cq_uk_init_info;
+	unsigned long flags;
 
 	cq->vsi = rsrc->vsi;
 	cqsize = rsrc->cq_size * (sizeof(struct irdma_cqe));
@@ -830,6 +831,13 @@ error:
 		dma_free_coherent(dev->hw->device, rsrc->cqmem.size,
 				  rsrc->cqmem.va, rsrc->cqmem.pa);
 		rsrc->cqmem.va = NULL;
+	} else {
+		spin_lock_irqsave(&dev->puda_cq_lock, flags);
+		if (rsrc->type == IRDMA_PUDA_RSRC_TYPE_ILQ)
+			dev->ilq_cq = cq;
+		else
+			dev->ieq_cq = cq;
+		spin_unlock_irqrestore(&dev->puda_cq_lock, flags);
 	}
 
 	return ret;
@@ -876,6 +884,14 @@ static void irdma_puda_free_cq(struct irdma_puda_rsrc *rsrc)
 	int ret;
 	struct irdma_ccq_cqe_info compl_info;
 	struct irdma_sc_dev *dev = rsrc->dev;
+	unsigned long flags;
+
+	spin_lock_irqsave(&dev->puda_cq_lock, flags);
+	if (rsrc->type == IRDMA_PUDA_RSRC_TYPE_ILQ)
+		dev->ilq_cq = NULL;
+	else
+		dev->ieq_cq = NULL;
+	spin_unlock_irqrestore(&dev->puda_cq_lock, flags);
 
 	if (rsrc->dev->ceq_valid) {
 		irdma_cqp_cq_destroy_cmd(dev, &rsrc->cq);
@@ -1411,8 +1427,10 @@ static int irdma_ieq_handle_partial(struct irdma_puda_rsrc *ieq,
 		}
 	}
 
-	print_hex_dump_debug("IEQ: IEQ TX BUFFER", DUMP_PREFIX_OFFSET, 16, 8,
-			     txbuf->mem.va, txbuf->totallen, false);
+	if (dbg_opt & IRDMA_DBG_PUDA_PARTIAL_FPDU)
+		print_hex_dump_debug("IEQ: IEQ TX BUFFER", DUMP_PREFIX_OFFSET,
+				     16, 8, txbuf->mem.va, txbuf->totallen,
+				     false);
 	if (ieq->dev->hw_attrs.uk_attrs.hw_rev >= IRDMA_GEN_2)
 		txbuf->ah_id = pfpdu->ah->ah_info.ah_idx;
 	txbuf->do_lpb = true;
@@ -1511,9 +1529,12 @@ static int irdma_ieq_process_buf(struct irdma_puda_rsrc *ieq,
 			txbuf->totallen = buf->hdrlen + len;
 		}
 		irdma_ieq_update_tcpip_info(txbuf, len, buf->seqnum);
-		print_hex_dump_debug("IEQ: IEQ TX BUFFER", DUMP_PREFIX_OFFSET,
-				     16, 8, txbuf->mem.va, txbuf->totallen,
-				     false);
+
+		if (dbg_opt & IRDMA_DBG_PUDA_PARTIAL_FPDU)
+			print_hex_dump_debug("IEQ: IEQ TX BUFFER",
+					     DUMP_PREFIX_OFFSET, 16, 8,
+					     txbuf->mem.va, txbuf->totallen,
+					     false);
 		txbuf->do_lpb = true;
 		irdma_puda_send_buf(ieq, txbuf);
 
@@ -1610,8 +1631,9 @@ static void irdma_ieq_handle_exception(struct irdma_puda_rsrc *ieq,
 	unsigned long flags = 0;
 	u8 hw_rev = qp->dev->hw_attrs.uk_attrs.hw_rev;
 
-	print_hex_dump_debug("IEQ: IEQ RX BUFFER", DUMP_PREFIX_OFFSET, 16, 8,
-			     buf->mem.va, buf->totallen, false);
+	if (dbg_opt & IRDMA_DBG_PUDA_PARTIAL_FPDU)
+		print_hex_dump_debug("IEQ: IEQ RX BUFFER", DUMP_PREFIX_OFFSET,
+				     16, 8, buf->mem.va, buf->totallen, false);
 
 	spin_lock_irqsave(&pfpdu->lock, flags);
 	pfpdu->total_ieq_bufs++;
@@ -1667,7 +1689,7 @@ static void irdma_ieq_handle_exception(struct irdma_puda_rsrc *ieq,
 	}
 	if (hw_rev == IRDMA_GEN_1)
 		irdma_ieq_process_fpdus(qp, ieq);
-	else if (pfpdu->ah && pfpdu->ah->ah_info.ah_valid)
+	else if (pfpdu->ah && atomic_read(&pfpdu->ah->ah_info.ah_valid))
 		irdma_ieq_process_fpdus(qp, ieq);
 exit:
 	spin_unlock_irqrestore(&pfpdu->lock, flags);

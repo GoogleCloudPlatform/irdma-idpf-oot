@@ -200,7 +200,7 @@ __DEFINE_LOCK_GUARD_0(_name, _lock)
  */
 
 #include <linux/mutex.h>
-#ifdef NEED_DEFINE_GUARD_MUTEX
+#if defined(NEED_DEFINE_GUARD_MUTEX) && !defined(class_mutex_constructor)
 DEFINE_GUARD(mutex, struct mutex *, mutex_lock(_T), mutex_unlock(_T))
 #endif
 
