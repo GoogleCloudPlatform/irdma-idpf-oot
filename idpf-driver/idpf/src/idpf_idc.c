@@ -131,7 +131,6 @@ static int idpf_idc_init_aux_vport_dev(struct idpf_vport *vport)
 	vdev_info->vport_id = vport->vport_id;
 	vdev_info->netdev = vport->netdev;
 	vdev_info->core_adev = cdev_info->adev;
-	mutex_init(&vdev_info->iidc_notifier_lock);
 
 	err = idpf_plug_vport_aux_dev(cdev_info, vdev_info);
 	if (err) {
@@ -164,9 +163,10 @@ void idpf_idc_vdev_mtu_event(struct iidc_rdma_vport_dev_info *vdev_info,
 
 	set_bit(event_type, event.type);
 
-	mutex_lock(&vdev_info->iidc_notifier_lock);
 	adev = vdev_info->adev;
-	if (!adev || !adev->dev.driver || !auxiliary_get_drvdata(adev))
+	if (!adev || !device_trylock(&adev->dev))
+		return;
+	if (!adev->dev.driver || !auxiliary_get_drvdata(adev))
 		goto unlock;
 	iadrv = container_of(adev->dev.driver,
 			     struct iidc_rdma_vport_auxiliary_drv,
@@ -174,7 +174,7 @@ void idpf_idc_vdev_mtu_event(struct iidc_rdma_vport_dev_info *vdev_info,
 	if (iadrv->event_handler)
 		iadrv->event_handler(vdev_info, &event);
 unlock:
-	mutex_unlock(&vdev_info->iidc_notifier_lock);
+	device_unlock(&adev->dev);
 }
 
 /**

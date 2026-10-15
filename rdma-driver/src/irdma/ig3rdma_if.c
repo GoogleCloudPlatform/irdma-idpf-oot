@@ -558,9 +558,7 @@ static int ig3rdma_vport_probe(struct auxiliary_device *aux_dev, const struct au
 	if (err)
 		goto err_all;
 
-	mutex_lock(&idc_adev->vdev_info->iidc_notifier_lock);
 	auxiliary_set_drvdata(aux_dev, iwdev);
-	mutex_unlock(&idc_adev->vdev_info->iidc_notifier_lock);
 	printk(KERN_ERR "IRDMA register notifier post\n");
 	return 0;
 
@@ -597,9 +595,7 @@ static void ig3rdma_vport_remove(struct auxiliary_device *aux_dev)
 		  dev_name(&idc_adev->vdev_info->core_adev->dev),
 		  netdev_name(idc_adev->vdev_info->netdev));
 
-	mutex_lock(&idc_adev->vdev_info->iidc_notifier_lock);
 	auxiliary_set_drvdata(aux_dev, NULL);
-	mutex_unlock(&idc_adev->vdev_info->iidc_notifier_lock);
 	irdma_ib_unregister_device(iwdev);
 	ah_purge(iwdev);
 	irdma_unregister_notifiers(iwdev);
@@ -616,6 +612,9 @@ static void ig3rdma_idc_vport_event_handler(struct iidc_rdma_vport_dev_info *cde
 {
 	struct irdma_device *iwdev = auxiliary_get_drvdata(cdev_info->adev);
 	struct irdma_l2params l2params = {};
+
+	if (!iwdev)
+		return;
 
 	if (*event->type & BIT(IIDC_EVENT_AFTER_MTU_CHANGE)) {
 		ibdev_dbg(&iwdev->ibdev, "CLNT: new MTU = %d\n", iwdev->netdev->mtu);
