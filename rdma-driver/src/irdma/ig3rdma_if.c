@@ -408,7 +408,7 @@ static int ig3rdma_probe(struct auxiliary_device *aux_dev, const struct auxiliar
 	struct irdma_pci_f *rf;
 	int err;
 
-	printk(KERN_ERR "AH dedup and deferred deletion enabled v10\n");
+	printk(KERN_ERR "AH dedup and deferred deletion enabled v11\n");
 
 	rf = kzalloc(sizeof(*rf), GFP_KERNEL);
 	if (!rf)
