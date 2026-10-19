@@ -11,7 +11,6 @@ struct iidc_rdma_vport_dev_info {
 	struct auxiliary_device *adev;
 	struct auxiliary_device *core_adev;
 	struct net_device *netdev;
-	struct mutex iidc_notifier_lock;
 	u16 vport_id;
 };
 
