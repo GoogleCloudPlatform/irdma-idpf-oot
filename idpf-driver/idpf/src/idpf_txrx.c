@@ -1248,6 +1248,9 @@ static void idpf_rxq_sw_queue_rel(struct idpf_q_grp *q_grp, struct idpf_rxq_grou
 {
 	int i, j;
 
+	if (!rx_qgrp->splitq.bufq_sets)
+		return;
+
 	for (i = 0; i < q_grp->num_bufqs_per_qgrp; i++) {
 		struct idpf_bufq_set *bufq_set = &rx_qgrp->splitq.bufq_sets[i];
 
