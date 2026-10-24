@@ -350,7 +350,9 @@ static int poll_thread(void *context)
 	rf->sc_dev.last_cqp_poll_ts = ktime_get_raw_ns();
 	do {
 		usleep_range(sleep_micros, sleep_micros + HIGH_FREQ_MICROS);
+		mutex_lock(&rf->iwdev_lock);
 		ah_age_out(rf->iwdev);
+		mutex_unlock(&rf->iwdev_lock);
 		if (rf->sc_dev.hw_wa & AEQ_POLL) {
 			irdma_process_aeq(rf);
 			continue;
@@ -414,6 +416,8 @@ static int ig3rdma_probe(struct auxiliary_device *aux_dev, const struct auxiliar
 	if (!rf)
 		return -ENOMEM;
 
+	mutex_init(&rf->iwdev_lock);
+
 	err = ig3rdma_get_exported_symbols(rf);
 	if (err)
 		goto err_get_exported_symbols;
@@ -446,6 +450,7 @@ err_ctrl_init:
 err_fill_devinfo:
 	ig3rdma_put_exported_symbols(rf);
 err_get_exported_symbols:
+	mutex_destroy(&rf->iwdev_lock);
 	kfree(rf);
 
 	return err;
@@ -470,6 +475,7 @@ static void ig3rdma_remove(struct auxiliary_device *aux_dev)
 	if (rf->vchnl_wq)
 		destroy_workqueue(rf->vchnl_wq);
 	ig3rdma_put_exported_symbols(rf);
+	mutex_destroy(&rf->iwdev_lock);
 	kfree(rf);
 
 	pr_debug("INIT: Gen[%d] func[%d] device remove success\n",
@@ -516,8 +522,10 @@ static int ig3rdma_vport_probe(struct auxiliary_device *aux_dev, const struct au
 	/* Fill iwdev info */
 	iwdev->is_vport = true;
 	iwdev->rf = rf;
+	mutex_lock(&rf->iwdev_lock);
 	if (!rf->iwdev)
 		rf->iwdev = iwdev;
+	mutex_unlock(&rf->iwdev_lock);
 	iwdev->vport_id = idc_adev->vdev_info->vport_id;
 	iwdev->netdev = idc_adev->vdev_info->netdev;
 	iwdev->init_state = INITIAL_STATE;
@@ -574,6 +582,10 @@ err_ibreg:
 err_rt_init:
 	kfree(hdl);
 err_hdl:
+	mutex_lock(&rf->iwdev_lock);
+	if (rf->iwdev == iwdev)
+		rf->iwdev = NULL;
+	mutex_unlock(&rf->iwdev_lock);
 	ib_dealloc_device(&iwdev->ibdev);
 
 	return err;
@@ -597,6 +609,10 @@ static void ig3rdma_vport_remove(struct auxiliary_device *aux_dev)
 
 	auxiliary_set_drvdata(aux_dev, NULL);
 	irdma_ib_unregister_device(iwdev);
+	mutex_lock(&iwdev->rf->iwdev_lock);
+	if (iwdev->rf->iwdev == iwdev)
+		iwdev->rf->iwdev = NULL;
+	mutex_unlock(&iwdev->rf->iwdev_lock);
 	ah_purge(iwdev);
 	irdma_unregister_notifiers(iwdev);
 	irdma_deinit_device(iwdev);

@@ -424,6 +424,7 @@ struct irdma_pci_f {
 	struct task_struct *poll_thread;
 	struct irdma_dcqcn_cc_params dcqcn_params;
 	struct irdma_device *iwdev;
+	struct mutex iwdev_lock;
 	u8 vlan_parse_en;
 	struct delayed_work dwork_cqp_poll;
 	u32 chk_stag;

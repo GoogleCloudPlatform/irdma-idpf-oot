@@ -274,7 +274,7 @@ bool irdma_process_aeq(struct irdma_pci_f *rf)
 	unsigned long flags;
 	u32 aeqcnt = 0;
 
-	if (!sc_aeq->size)
+	if (!sc_aeq->size || !iwdev)
 		return false;
 
 	do {
