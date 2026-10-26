@@ -1387,13 +1387,7 @@ int irdma_uk_cq_poll_cmpl(struct irdma_cq_uk *cq,
 		goto exit;
 	}
 
-	if (info->error && qp->qp_type == IRDMA_QP_TYPE_ROCE_UD) {
-		info->error = false;
-		info->ud_error_masked = true;
-	} else {
-		info->ud_error_masked = false;
-	}
-
+	info->ud_error_masked = false;
 	if (info->error) {
 		info->major_err = FIELD_GET(IRDMA_CQ_MAJERR, qword3);
 		info->minor_err = FIELD_GET(IRDMA_CQ_MINERR, qword3);
@@ -1412,7 +1406,21 @@ int irdma_uk_cq_poll_cmpl(struct irdma_cq_uk *cq,
 			info->comp_status = IRDMA_COMPL_STATUS_FLUSHED;
 			break;
 		default:
-			info->comp_status = IRDMA_COMPL_STATUS_UNKNOWN;
+#define IRDMA_CIE_SIGNATURE 0xE
+#define IRDMA_CQMAJERR_HIGH_NIBBLE_S 12
+#define IRDMA_CQMAJERR_HIGH_NIBBLE GENMASK(15, 12)
+			if (info->q_type == IRDMA_CQE_QTYPE_SQ &&
+			    qp->qp_type == IRDMA_QP_TYPE_ROCE_UD &&
+			    FIELD_GET(IRDMA_CQMAJERR_HIGH_NIBBLE, info->major_err) ==
+			    IRDMA_CIE_SIGNATURE) {
+				info->error = false;
+				info->ud_error_masked = true;
+				info->major_err = 0;
+				info->minor_err = 0;
+				info->comp_status = IRDMA_COMPL_STATUS_SUCCESS;
+			} else {
+				info->comp_status = IRDMA_COMPL_STATUS_UNKNOWN;
+			}
 			break;
 		}
 	} else {
