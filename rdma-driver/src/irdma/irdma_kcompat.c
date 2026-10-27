@@ -967,6 +967,11 @@ static int irdma_create_ah_wait(struct irdma_pci_f *rf,
 			u64 tmp;
 			u64 curr_jiffies;
 
+			if (rf->reset) {
+				/* device is being reset, no completion will arrive */
+				timeout = true;
+				break;
+			}
 			irdma_cqp_ce_handler(rf, &rf->ccq.sc_cq);
 
 			curr_jiffies = get_jiffies_64();
