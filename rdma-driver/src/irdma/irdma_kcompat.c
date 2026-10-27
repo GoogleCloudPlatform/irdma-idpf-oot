@@ -181,12 +181,16 @@ struct ib_mr *irdma_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_type,
 {
 #endif
 	struct irdma_device *iwdev = to_iwdev(pd->device);
+	u32 pages_per_page = irdma_fmr_pages_per_page(&iwdev->rf->sc_dev);
 	struct irdma_pble_alloc *palloc;
 	struct irdma_pbl *iwpbl;
 	struct irdma_mr *iwmr;
 	int status;
 	u32 stag;
 	int err_code = -ENOMEM;
+
+	if (max_num_sg > IRDMA_MAX_PAGES_PER_FMR / pages_per_page)
+		return ERR_PTR(-EINVAL);
 
 	iwmr = kzalloc(sizeof(*iwmr), GFP_KERNEL);
 	if (!iwmr)
@@ -207,7 +211,12 @@ struct ib_mr *irdma_alloc_mr(struct ib_pd *pd, enum ib_mr_type mr_type,
 	iwpbl->iwmr = iwmr;
 	iwmr->type = IRDMA_MEMREG_TYPE_MEM;
 	palloc = &iwpbl->pble_alloc;
-	iwmr->page_cnt = max_num_sg;
+	/* Some ULPs pass PAGE_SIZE to ib_map_mr_sg() but PAGE_SIZE can be some
+	 * multiple of 4K that the HW does not natively support. We can work
+	 * around this by cracking the larger page into multiple 4K pages, but
+	 * page_cnt needs to be scaled.
+	 */
+	iwmr->page_cnt = max_num_sg * pages_per_page;
 	/* Assume system PAGE_SIZE as the sg page sizes are unknown. */
 	iwmr->len = max_num_sg * PAGE_SIZE;
 	status = irdma_get_pble(iwdev->rf->pble_rsrc, palloc, iwmr->page_cnt,
