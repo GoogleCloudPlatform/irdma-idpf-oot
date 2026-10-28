@@ -967,6 +967,11 @@ static int irdma_create_ah_wait(struct irdma_pci_f *rf,
 			u64 tmp;
 			u64 curr_jiffies;
 
+			if (rf->reset) {
+				/* device is being reset, no completion will arrive */
+				timeout = true;
+				break;
+			}
 			irdma_cqp_ce_handler(rf, &rf->ccq.sc_cq);
 
 			curr_jiffies = get_jiffies_64();
@@ -1329,15 +1334,12 @@ int irdma_create_ah_v2(struct ib_ah *ib_ah,
 			      false, NULL, sc_ah);
 	if (err) {
 		ibdev_err(&iwdev->ibdev, "CQP-OP Create AH fail");
-		spin_unlock(&iwdev->ah_tbl_lock);
-		goto err_ah_create;
+		goto err_cqp;
 	}
 
 	err = irdma_create_ah_wait(rf, sc_ah, false);
-	if (err) {
-		spin_unlock(&iwdev->ah_tbl_lock);
-		goto err_ah_create;
-	}
+	if (err)
+		goto err_cqp;
 
 exit:
 	spin_unlock(&iwdev->ah_tbl_lock);
@@ -1353,6 +1355,14 @@ exit:
 err_ah_create:
 	irdma_destroy_ah(ib_ah, 0);
 	return err;
+err_cqp:
+	if (ah->parent_ah) {
+		hash_del(&ah->parent_ah->list);
+		kfree(ah->parent_ah);
+		ah->parent_ah = NULL;
+		iwdev->ah_list_cnt--;
+	}
+	spin_unlock(&iwdev->ah_tbl_lock);
 err_gid_l2:
 	if (ah_id)
 		irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_ahs, ah_id);
@@ -2787,7 +2797,11 @@ int irdma_destroy_ah(struct ib_ah *ibah, u32 ah_flags)
 	struct irdma_ah *ah = to_iwah(ibah);
 
 	if (!ah->parent_ah) {
-		BUG();
+		irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah, IRDMA_OP_AH_DESTROY,
+				false, NULL, ah);
+		irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_ahs,
+				ah->sc_ah.ah_info.ah_idx);
+		return 0;
 	}
 
 	spin_lock(&iwdev->ah_tbl_lock);

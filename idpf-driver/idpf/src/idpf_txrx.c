@@ -180,6 +180,9 @@ static void idpf_tx_buf_rel_all(struct idpf_queue *txq)
  */
 static void idpf_tx_desc_rel(struct idpf_queue *txq, bool bufq)
 {
+	if (!txq)
+		return;
+
 	if (bufq) {
 		idpf_tx_buf_rel_all(txq);
 #ifdef HAVE_XDP_SUPPORT
@@ -212,10 +215,13 @@ static void idpf_tx_desc_rel_all(struct idpf_q_grp *q_grp)
 {
 	int i;
 
+	if (!q_grp->txqs)
+		return;
+
 	for (i = 0; i < q_grp->num_txq; i++)
 		idpf_tx_desc_rel(q_grp->txqs[i], true);
 
-	if (!idpf_is_queue_model_split(q_grp->txq_model))
+	if (!idpf_is_queue_model_split(q_grp->txq_model) || !q_grp->complqs)
 		return;
 
 	for (i = 0; i < q_grp->num_complq; i++)
@@ -895,21 +901,25 @@ static void idpf_tx_queue_rel_all(struct idpf_q_grp *q_grp)
 
 	idpf_tx_desc_rel_all(q_grp);
 
-	for (i = 0; i < q_grp->num_complq; i++) {
-		kfree(q_grp->complqs[i].tx.txqs);
-		q_grp->complqs[i].tx.txqs = NULL;
+	if (q_grp->complqs) {
+		for (i = 0; i < q_grp->num_complq; i++) {
+			kfree(q_grp->complqs[i].tx.txqs);
+			q_grp->complqs[i].tx.txqs = NULL;
+		}
+
+		kfree(q_grp->complqs);
+		q_grp->complqs = NULL;
 	}
 
-	kfree(q_grp->complqs);
-	q_grp->complqs = NULL;
+	if (q_grp->txqs) {
+		for (i = 0; i < q_grp->num_txq; i++) {
+			kfree(q_grp->txqs[i]);
+			q_grp->txqs[i] = NULL;
+		}
 
-	for (i = 0; i < q_grp->num_txq; i++) {
-		kfree(q_grp->txqs[i]);
-		q_grp->txqs[i] = NULL;
+		kfree(q_grp->txqs);
+		q_grp->txqs = NULL;
 	}
-
-	kfree(q_grp->txqs);
-	q_grp->txqs = NULL;
 }
 
 /**
@@ -954,6 +964,9 @@ static void idpf_rxq_rel(struct idpf_q_grp *q_grp, struct idpf_queue *rxq,
  */
 static void idpf_bufq_rel(struct idpf_queue *bufq)
 {
+	if (!bufq)
+		return;
+
 	idpf_rx_buf_rel_all(bufq);
 
 	if (!bufq->desc_ring)
@@ -974,8 +987,15 @@ static void idpf_rx_queue_rel_all(struct idpf_q_grp *q_grp)
 	if (!idpf_is_queue_model_split(q_grp->rxq_model))
 		goto rxq_rel;
 
+	if (!q_grp->bufqs)
+		goto rxq_rel;
+
 	for (i = 0; i < q_grp->num_bufq; i++) {
 		idpf_bufq_rel(&q_grp->bufqs[i]);
+
+		if (!q_grp->refillqs)
+			continue;
+
 		kfree(q_grp->refillqs[i].ring);
 	}
 
@@ -985,7 +1005,13 @@ static void idpf_rx_queue_rel_all(struct idpf_q_grp *q_grp)
 	q_grp->refillqs = NULL;
 
 rxq_rel:
+	if (!q_grp->rxqs)
+		return;
+
 	for (i = 0; i < q_grp->num_rxq; i++) {
+		if (!q_grp->rxqs[i])
+			continue;
+
 		idpf_rxq_rel(q_grp, q_grp->rxqs[i], q_grp->bufq_per_rxq);
 #ifdef HAVE_XDP_BUFF_RXQ
 		if (xdp_rxq_info_is_reg(&q_grp->rxqs[i]->xdp_rxq))

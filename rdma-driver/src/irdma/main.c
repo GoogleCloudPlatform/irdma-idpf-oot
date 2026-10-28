@@ -678,7 +678,7 @@ static void ah_purge(struct irdma_device *iwdev)
 		iwdev->ah_list_cnt--;
 		iwdev->ah_deletion_list_cnt--;
 		list_del(&ah->node);
-		kfree(ah->parent_ah);
+		kfree(ah);
 	}
 
 	spin_unlock(&iwdev->ah_tbl_lock);
@@ -717,7 +717,7 @@ static void ah_age_out(struct irdma_device *iwdev)
 		iwdev->ah_list_cnt--;
 		iwdev->ah_deletion_list_cnt--;
 		list_del(&ah->node);
-		kfree(ah->parent_ah);
+		kfree(ah);
 	}
 
 	spin_unlock(&iwdev->ah_tbl_lock);
