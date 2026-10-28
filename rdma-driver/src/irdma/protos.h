@@ -126,4 +126,5 @@ int irdma_cqp_manage_hmc_fcn_cmd(struct irdma_sc_dev *dev,
 int irdma_set_attr_from_fragcnt(struct irdma_sc_dev *dev, u8 max_fragcnt);
 void *irdma_remove_cqp_head(struct irdma_sc_dev *dev);
 u64 ether_addr_to_u64(const u8 *eth_add);
+u32 irdma_fmr_pages_per_page(struct irdma_sc_dev *dev);
 #endif /* IRDMA_PROTOS_H */

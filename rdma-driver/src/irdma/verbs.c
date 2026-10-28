@@ -3,6 +3,21 @@
 #include "main.h"
 
 /**
+ * irdma_fmr_pages_per_page() - HW pages needed per PAGE_SIZE page in an FRWR.
+ * @dev: sc device
+ *
+ * If PAGE_SIZE is one of the HW supported page sizes, then it can be directly
+ * used. Otherwise, we need to break PAGE_SIZE into multiple HW (4K) pages.
+ */
+u32 irdma_fmr_pages_per_page(struct irdma_sc_dev *dev)
+{
+	if (PAGE_SIZE & dev->hw_attrs.page_size_cap)
+		return 1;
+
+	return IRDMA_HW_PAGES_PER_PAGE;
+}
+
+/**
  * irdma_query_device - get device attributes
  * @ibdev: device pointer from stack
  * @props: returning device attributes
@@ -54,7 +69,8 @@ static int irdma_query_device(struct ib_device *ibdev,
 			props->max_total_mcast_qp_attach = rf->max_qp * IRDMA_MAX_MGS_PER_CTX;
 		}
 	}
-	props->max_fast_reg_page_list_len = IRDMA_MAX_PAGES_PER_FMR;
+	props->max_fast_reg_page_list_len =
+		IRDMA_MAX_PAGES_PER_FMR / irdma_fmr_pages_per_page(&rf->sc_dev);
 	props->max_srq = rf->max_srq - rf->used_srqs;
 	props->max_srq_wr = IRDMA_MAX_SRQ_WRS;
 	props->max_srq_sge = hw_attrs->uk_attrs.max_hw_wq_frags;
@@ -2864,7 +2880,14 @@ static int irdma_set_page(struct ib_mr *ibmr, u64 addr)
 static int irdma_map_mr_sg(struct ib_mr *ibmr, struct scatterlist *sg,
 			   int sg_nents, unsigned int *sg_offset)
 {
+	struct irdma_device *iwdev = to_iwdev(ibmr->device);
 	struct irdma_mr *iwmr = to_iwmr(ibmr);
+
+	/* HW only supports 4K, 2M and 1G pages, but some ULPs pass PAGE_SIZE
+	 * which can be some multiple of 4K that we do not support, so force 4K.
+	 */
+	if (!(ibmr->page_size & iwdev->rf->sc_dev.hw_attrs.page_size_cap))
+		ibmr->page_size = SZ_4K;
 
 	iwmr->npages = 0;
 

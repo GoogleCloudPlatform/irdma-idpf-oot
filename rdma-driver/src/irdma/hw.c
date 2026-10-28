@@ -274,7 +274,7 @@ bool irdma_process_aeq(struct irdma_pci_f *rf)
 	unsigned long flags;
 	u32 aeqcnt = 0;
 
-	if (!sc_aeq->size)
+	if (!sc_aeq->size || !iwdev)
 		return false;
 
 	do {
@@ -736,7 +736,7 @@ static void irdma_destroy_cqp(struct irdma_pci_f *rf, bool free_hwcqp)
 static void irdma_destroy_virt_aeq(struct irdma_pci_f *rf)
 {
 	struct irdma_aeq *aeq = &rf->aeq;
-	u32 pg_cnt = DIV_ROUND_UP(aeq->mem.size, PAGE_SIZE);
+	u32 pg_cnt = DIV_ROUND_UP(aeq->mem.size, IRDMA_HW_PAGE_SIZE);
 	dma_addr_t *pg_arr = (dma_addr_t *)aeq->palloc.level1.addr;
 
 	irdma_unmap_vm_page_list(&rf->hw, pg_arr, pg_cnt);
@@ -1608,7 +1608,7 @@ static int irdma_create_virt_aeq(struct irdma_pci_f *rf, u32 size)
 	if (!aeq->mem.va)
 		return -ENOMEM;
 
-	pg_cnt = DIV_ROUND_UP(aeq->mem.size, PAGE_SIZE);
+	pg_cnt = DIV_ROUND_UP(aeq->mem.size, IRDMA_HW_PAGE_SIZE);
 	status = irdma_get_pble(rf->pble_rsrc, &aeq->palloc, pg_cnt, true);
 	if (status) {
 		vfree(aeq->mem.va);

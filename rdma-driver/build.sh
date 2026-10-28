@@ -284,7 +284,7 @@ if [ "$USE_OFED" == "1" ]; then
 	KBUILD_EXTRA_SYMBOLS+=" $OFED_OPENIB_PATH/Module.symvers "
 	export KBUILD_EXTRA_SYMBOLS
 
-	INCLUDE_COMPAT_HDR="-include $OFED_OPENIB_PATH/include/linux/compat-2.6.h -I$OFED_OPENIB_PATH/include -I$OFED_OPENIB_PATH/include/uapi"
+	INCLUDE_COMPAT_HDR="-include ${KSRC}/include/linux/auxiliary_bus.h -include $OFED_OPENIB_PATH/include/linux/compat-2.6.h -I$OFED_OPENIB_PATH/include -I$OFED_OPENIB_PATH/include/uapi"
 	export INCLUDE_COMPAT_HDR
 
 	# WA required to build RHEL OFED using gcc >= 5.x
