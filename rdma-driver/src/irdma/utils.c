@@ -936,6 +936,9 @@ static int irdma_wait_event(struct irdma_pci_f *rf,
 				       msecs_to_jiffies(wait_time_ms)))
 			break;
 
+		if (rf->reset)
+			return -ENODEV;
+
 		if (cqp_request->pending)
 			/* There was a deferred or pending completion
 			 * received for this CQP request, so we need
@@ -1767,7 +1770,7 @@ int irdma_hw_modify_qp(struct irdma_device *iwdev, struct irdma_qp *iwqp,
 	cqp_info->post_sq = 1;
 	cqp_info->in.u.qp_modify.qp = &iwqp->sc_qp;
 	cqp_info->in.u.qp_modify.scratch = (uintptr_t)cqp_request;
-	cqp_info->create = true;
+	cqp_info->create = false;
 	status = irdma_handle_cqp_op(rf, cqp_request);
 	irdma_put_cqp_request(&rf->cqp, cqp_request);
 	if (status) {
@@ -1804,7 +1807,6 @@ int irdma_hw_modify_qp(struct irdma_device *iwdev, struct irdma_qp *iwqp,
 				cqp_info->in.u.qp_modify.scratch = (uintptr_t)cqp_request;
 				m_info->next_iwarp_state = IRDMA_QP_STATE_ERROR;
 				m_info->reset_tcp_conn = true;
-				cqp_info->create = true;
 				irdma_handle_cqp_op(rf, cqp_request);
 				irdma_put_cqp_request(&rf->cqp, cqp_request);
 			}
