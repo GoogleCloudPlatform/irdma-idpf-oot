@@ -35,6 +35,7 @@
 #define IRDMA_VCHNL_OP_MANAGE_WS_NODE_V0 0
 #define IRDMA_VCHNL_OP_VLAN_PARSING_V0 0
 #define IRDMA_VCHNL_OP_PUSH_TEL_EVENTS_V0 0
+#define IRDMA_VCHNL_OP_DEV_NOTIFY_V0 0
 
 #define IRDMA_VCHNL_INVALID_VF_IDX 0xFFFF
 
@@ -88,6 +89,14 @@ enum irdma_vchnl_ops {
 	IRDMA_VCHNL_OP_DEL_VPORT = 17,
 	IRDMA_VCHNL_OP_GET_MULTI_QS = 18,
 	IRDMA_VCHNL_OP_PUSH_TEL_EVENTS = 19,
+	IRDMA_VCHNL_OP_DEV_NOTIFY = 20,
+};
+
+/* IRDMA_VCHNL_OP_DEV_NOTIFY events. Values are ABI; 0 is reserved. */
+enum irdma_vchnl_dev_event {
+	IRDMA_VCHNL_DEV_EVENT_INIT_DONE = 1,
+	IRDMA_VCHNL_DEV_EVENT_UNREGISTERING = 2,
+	IRDMA_VCHNL_DEV_EVENT_UNREGISTERED = 3,
 };
 
 #pragma pack(push, 1)
@@ -227,6 +236,14 @@ struct irdma_vchnl_req_ver_info {
 	__le64 driver_caps; /* IRDMA_DRIVER_CAP_* */
 };
 
+/*
+ * IRDMA_VCHNL_OP_DEV_NOTIFY payload, only sent if the control plane advertises
+ * IRDMA_DEV_NOTIFY_SUPP. Extend only by appending new fields.
+ */
+struct irdma_vchnl_dev_notify {
+	__le32 event; /* enum irdma_vchnl_dev_event */
+};
+
 #pragma pack(pop)
 
 struct irdma_tel_event;
@@ -252,6 +269,8 @@ int irdma_vchnl_req_get_ver(struct irdma_sc_dev *dev, u16 ver_req, u32 *ver_res,
 int irdma_vchnl_req_get_hmc_fcn(struct irdma_sc_dev *dev);
 int irdma_vchnl_req_put_hmc_fcn(struct irdma_sc_dev *dev);
 int irdma_vchnl_req_get_caps(struct irdma_sc_dev *dev);
+int irdma_vchnl_req_dev_notify(struct irdma_sc_dev *dev,
+			       enum irdma_vchnl_dev_event event);
 int irdma_vchnl_req_get_resp(struct irdma_sc_dev *dev,
 			     struct irdma_vchnl_req *vc_req);
 int irdma_vchnl_req_get_multi_qs(struct irdma_sc_dev *dev);

@@ -122,7 +122,9 @@ int irdma_sc_vchnl_init(struct irdma_sc_dev *dev,
 	dev->hw_attrs.uk_attrs.max_hw_push_len = IRDMA_DEFAULT_MAX_PUSH_LEN;
 
 	if (!dev->privileged) {
-		struct irdma_vchnl_req_ver_info ver_info = {};
+		struct irdma_vchnl_req_ver_info ver_info = {
+			.driver_caps = cpu_to_le64(IRDMA_DRIVER_CAP_DEV_NOTIFY),
+		};
 		int ret = irdma_vchnl_req_get_ver(dev, IRDMA_VCHNL_CHNL_VER_MAX,
 						  &dev->vchnl_ver, &ver_info);
 		/* Attempt to negotiate down to V1 as it does not negotaite. */
@@ -876,6 +878,7 @@ static int irdma_vchnl_req_verify_resp(struct irdma_vchnl_req *vchnl_req,
 	case IRDMA_VCHNL_OP_ADD_VPORT:
 	case IRDMA_VCHNL_OP_DEL_VPORT:
 	case IRDMA_VCHNL_OP_PUSH_TEL_EVENTS:
+	case IRDMA_VCHNL_OP_DEV_NOTIFY:
 		break;
 	default:
 		return -EBADMSG;
@@ -1604,6 +1607,30 @@ int irdma_vchnl_push_tel_events(struct irdma_sc_dev *dev,
 	info.req_parm_len = sizeof(*event) + event->hdr.data_len;
 	info.resp_parm = NULL;
 	info.resp_parm_len = 0;
+
+	return irdma_vchnl_req_send_sync(dev, &info);
+}
+
+/**
+ * irdma_vchnl_req_dev_notify - Notify the control plane of a device lifecycle event
+ * @dev: RDMA device pointer
+ * @event: device lifecycle event
+ */
+int irdma_vchnl_req_dev_notify(struct irdma_sc_dev *dev,
+			       enum irdma_vchnl_dev_event event)
+{
+	struct irdma_vchnl_dev_notify notify = {
+		.event = cpu_to_le32(event),
+	};
+	struct irdma_vchnl_req_init_info info = {};
+
+	if (!dev->vchnl_up)
+		return -EBUSY;
+
+	info.op_code = IRDMA_VCHNL_OP_DEV_NOTIFY;
+	info.op_ver = IRDMA_VCHNL_OP_DEV_NOTIFY_V0;
+	info.req_parm = &notify;
+	info.req_parm_len = sizeof(notify);
 
 	return irdma_vchnl_req_send_sync(dev, &info);
 }
