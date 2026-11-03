@@ -219,6 +219,14 @@ struct irdma_vchnl_req_init_info {
 	u16 op_ver;
 };
 
+/*
+ * Optional IRDMA_VCHNL_OP_GET_VER payload, only sent with V2+ requests.
+ * Responders detect it by length, so only append new fields.
+ */
+struct irdma_vchnl_req_ver_info {
+	__le64 driver_caps; /* IRDMA_DRIVER_CAP_* */
+};
+
 #pragma pack(pop)
 
 struct irdma_tel_event;
@@ -239,7 +247,8 @@ int irdma_vchnl_req_get_vlan_parsing_cfg(struct irdma_sc_dev *dev,
 int irdma_vchnl_send_sync(struct irdma_sc_dev *dev, u8 *msg, u16 len,
 			  u8 *recv_msg, u16 *recv_len);
 int irdma_vchnl_req_recv(struct irdma_sc_dev *dev, u16 vf_id, u8 *msg, u16 len);
-int irdma_vchnl_req_get_ver(struct irdma_sc_dev *dev, u16 ver_req, u32 *ver_res);
+int irdma_vchnl_req_get_ver(struct irdma_sc_dev *dev, u16 ver_req, u32 *ver_res,
+			    struct irdma_vchnl_req_ver_info *ver_info);
 int irdma_vchnl_req_get_hmc_fcn(struct irdma_sc_dev *dev);
 int irdma_vchnl_req_put_hmc_fcn(struct irdma_sc_dev *dev);
 int irdma_vchnl_req_get_caps(struct irdma_sc_dev *dev);

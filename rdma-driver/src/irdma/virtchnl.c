@@ -122,12 +122,13 @@ int irdma_sc_vchnl_init(struct irdma_sc_dev *dev,
 	dev->hw_attrs.uk_attrs.max_hw_push_len = IRDMA_DEFAULT_MAX_PUSH_LEN;
 
 	if (!dev->privileged) {
+		struct irdma_vchnl_req_ver_info ver_info = {};
 		int ret = irdma_vchnl_req_get_ver(dev, IRDMA_VCHNL_CHNL_VER_MAX,
-						  &dev->vchnl_ver);
+						  &dev->vchnl_ver, &ver_info);
 		/* Attempt to negotiate down to V1 as it does not negotaite. */
 		if (ret) {
 			ret = irdma_vchnl_req_get_ver(dev, IRDMA_VCHNL_CHNL_VER_V1,
-						      &dev->vchnl_ver);
+						      &dev->vchnl_ver, NULL);
 		}
 
 		ibdev_dbg(to_ibdev(dev),
@@ -1293,8 +1294,10 @@ int irdma_vchnl_req_recv(struct irdma_sc_dev *dev, u16 vf_id, u8 *msg, u16 len)
  * @dev: RDMA device pointer
  * @ver_req: Virtual channel version requested
  * @ver_res: Virtual channel version response
+ * @ver_info: Optional request payload, NULL to send a header-only request
  */
-int irdma_vchnl_req_get_ver(struct irdma_sc_dev *dev, u16 ver_req, u32 *ver_res)
+int irdma_vchnl_req_get_ver(struct irdma_sc_dev *dev, u16 ver_req, u32 *ver_res,
+			    struct irdma_vchnl_req_ver_info *ver_info)
 {
 	struct irdma_vchnl_req_init_info info = {};
 	int ret;
@@ -1304,6 +1307,10 @@ int irdma_vchnl_req_get_ver(struct irdma_sc_dev *dev, u16 ver_req, u32 *ver_res)
 
 	info.op_code = IRDMA_VCHNL_OP_GET_VER;
 	info.op_ver = ver_req;
+	if (ver_info) {
+		info.req_parm = ver_info;
+		info.req_parm_len = sizeof(*ver_info);
+	}
 	info.resp_parm = ver_res;
 	info.resp_parm_len = sizeof(*ver_res);
 
