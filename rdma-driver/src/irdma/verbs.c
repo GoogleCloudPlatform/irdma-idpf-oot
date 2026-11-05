@@ -4820,6 +4820,29 @@ void irdma_port_ibevent(struct irdma_device *iwdev)
 }
 
 /**
+ * irdma_flush_kernel_qps - flush kernel QPs during device reset
+ * @iwdev: irdma device
+ */
+static void irdma_flush_kernel_qps(struct irdma_device *iwdev)
+{
+	struct irdma_pci_f *rf = iwdev->rf;
+	struct irdma_qp *iwqp;
+	unsigned long flags;
+	u32 i;
+
+	spin_lock_irqsave(&rf->qptable_lock, flags);
+	for_each_set_bit(i, rf->allocated_qps, rf->max_qp) {
+		iwqp = rf->qp_table[i];
+		if (!iwqp || iwqp->user_mode)
+			continue;
+
+		atomic_set(&iwqp->flush_issued, 1);
+		irdma_sched_qp_flush_work(iwqp);
+	}
+	spin_unlock_irqrestore(&rf->qptable_lock, flags);
+}
+
+/**
  * irdma_ib_unregister_device - unregister rdma device from IB
  * core
  * @iwdev: irdma device
@@ -4828,6 +4851,8 @@ void irdma_ib_unregister_device(struct irdma_device *iwdev)
 {
 	iwdev->iw_status = 0;
 	irdma_port_ibevent(iwdev);
+	if (iwdev->rf->reset)
+		irdma_flush_kernel_qps(iwdev);
 	ib_unregister_device(&iwdev->ibdev);
 #ifndef NETDEV_TO_IBDEV_SUPPORT
 	dev_put(iwdev->netdev);
