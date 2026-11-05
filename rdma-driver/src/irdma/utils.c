@@ -937,7 +937,7 @@ static int irdma_wait_event(struct irdma_pci_f *rf,
 			break;
 
 		if (rf->reset)
-			return -ENODEV;
+			return cqp_request->info.create ? -EBUSY : 0;
 
 		if (cqp_request->pending)
 			/* There was a deferred or pending completion
