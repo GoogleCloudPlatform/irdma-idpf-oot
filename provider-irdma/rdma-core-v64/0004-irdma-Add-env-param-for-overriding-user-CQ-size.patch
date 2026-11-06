@@ -1,0 +1,92 @@
+From 57e4da1523ceb7d281abf369b1d5018524dcc610 Mon Sep 17 00:00:00 2001
+From: Jacob Moroni <jmoroni@google.com>
+Date: Fri, 5 Sep 2025 20:21:35 +0000
+Subject: [PATCH 4/8] irdma: Add env param for overriding user CQ size
+
+Added a new env param to allow the user's requested
+CQ size to be overridden to the value specified. This
+may be useful for applications that do not implement
+proper enforcement to prevent CQ overflow.
+
+Signed-off-by: Jacob Moroni <jmoroni@google.com>
+---
+ providers/irdma/umain.c  | 16 ++++++++++++++--
+ providers/irdma/user.h   |  5 +++++
+ providers/irdma/uverbs.c |  3 +++
+ 3 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/providers/irdma/umain.c b/providers/irdma/umain.c
+index 7d7a3ba1..d8428bb2 100644
+--- a/providers/irdma/umain.c
++++ b/providers/irdma/umain.c
+@@ -26,6 +26,7 @@ struct irdma_env_params env = {
+ 	.pass_cie_vendor_err = false,
+ 	.ud_qd_override = 0,
+ 	.transparent_ud_qd_override = 0,
++	.cq_size_override = 0,
+ };
+ 
+ unsigned int irdma_dbg;
+@@ -400,6 +401,16 @@ static struct verbs_device *irdma_device_alloc(struct verbs_sysfs_dev *sysfs_dev
+ 			env.transparent_ud_qd_override = tmp;
+ 	}
+ 
++	env_val = getenv("IRDMA_CQ_SIZE_OVERRIDE");
++	if (env_val) {
++		tmp = atoi(env_val);
++		if (tmp < 0)
++			fprintf(stderr, "Ignoring invalid "
++				"IRDMA_CQ_SIZE_OVERRIDE value of %d\n", tmp);
++		else
++			env.cq_size_override = tmp;
++	}
++
+ 	env_val = getenv("IRDMA_DEBUG");
+ 	if (env_val)
+ 		irdma_dbg = atoi(env_val);
+@@ -409,9 +420,10 @@ static struct verbs_device *irdma_device_alloc(struct verbs_sysfs_dev *sysfs_dev
+ 		       "Params:\n"
+ 		       "\tIRDMA_PASS_CIE_VENDOR_ERR = %d\n"
+ 		       "\tIRDMA_UD_QD_OVERRIDE = %d\n"
+-		       "\tIRDMA_TRANSPARENT_UD_QD_OVERRIDE = %d\n",
++		       "\tIRDMA_TRANSPARENT_UD_QD_OVERRIDE = %d\n"
++		       "\tIRDMA_CQ_SIZE_OVERRIDE = %d\n",
+ 		       env.pass_cie_vendor_err, env.ud_qd_override,
+-		       env.transparent_ud_qd_override);
++		       env.transparent_ud_qd_override, env.cq_size_override);
+ 	}
+ 
+ 	/* Create debug_thread only once upon first call to irdma_device_alloc
+diff --git a/providers/irdma/user.h b/providers/irdma/user.h
+index 9ffda500..65221c48 100644
+--- a/providers/irdma/user.h
++++ b/providers/irdma/user.h
+@@ -39,6 +39,11 @@ struct irdma_env_params {
+ 	 *    only the first 2 will be sent until completions are polled.
+ 	 */
+ 	uint32_t transparent_ud_qd_override;
++
++	/* If non-zero, the user's requested CQ size will be ignored and the
++	 * value specified will be used instead.
++	 */
++	uint32_t cq_size_override;
+ };
+ 
+ extern struct irdma_env_params env;
+diff --git a/providers/irdma/uverbs.c b/providers/irdma/uverbs.c
+index 1366e1ec..8f80e8a6 100644
+--- a/providers/irdma/uverbs.c
++++ b/providers/irdma/uverbs.c
+@@ -835,6 +835,9 @@ static struct ibv_cq_ex *ucreate_cq(struct ibv_context *context,
+ 		}
+ 	}
+ 
++	if (env.cq_size_override)
++		attr_ex->cqe = env.cq_size_override;
++
+ 	if (attr_ex->cqe < uk_attrs->min_hw_cq_size || attr_ex->cqe > uk_attrs->max_hw_cq_size - 1) {
+ 		errno = EINVAL;
+ 		return NULL;
+-- 
+2.56.0.212.g129ede20d9-goog
+

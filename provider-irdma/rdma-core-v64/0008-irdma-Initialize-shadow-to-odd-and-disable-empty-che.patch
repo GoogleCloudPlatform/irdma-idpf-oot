@@ -1,0 +1,108 @@
+From 495e0217344ea5d1571fc625b7e9b9a09e6b1f1e Mon Sep 17 00:00:00 2001
+From: Ted Shaowang <shaowang@google.com>
+Date: Tue, 16 Jun 2026 18:40:58 +0000
+Subject: [PATCH 8/8] irdma: Initialize shadow to odd and disable empty check
+ for polling CQs
+
+The hardware CQ shadow area is updated using an odd value masking logic.
+To avoid triggering a hardware translation bug, the driver implements a
+workaround that avoids writing even values to the shadow area.
+
+This patch makes two improvements to the CQ shadow area logic:
+1. Initializes the shadow area to cq_size - 1 (which is guaranteed to be an
+   odd value) rather than 0 during CQ creation. This ensures the hardware
+   never sees an even shadow value on the very first update.
+2. Disables the CQ empty check (irdma_cq_empty) during fast-path polling
+   for applications that do not use CQ interrupts (channel == NULL). This
+   safely bypasses the even value shadow update restriction for CQs that
+   are strictly busy-polling.
+
+Signed-off-by: Ted Shaowang <shaowang@google.com>
+---
+ providers/irdma/uk.c     | 16 +++++++++++++---
+ providers/irdma/user.h   |  2 ++
+ providers/irdma/uverbs.c |  4 +++-
+ 3 files changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/providers/irdma/uk.c b/providers/irdma/uk.c
+index 23ca9062..343f9b01 100644
+--- a/providers/irdma/uk.c
++++ b/providers/irdma/uk.c
+@@ -1602,8 +1602,12 @@ int irdma_uk_cq_poll_cmpl(struct irdma_cq_uk *cq,
+ 			if (wqe_idx < qp->conn_wqes && qp->sq_ring.head == qp->sq_ring.tail) {
+ 				IRDMA_RING_MOVE_HEAD_NOCHECK(cq->cq_ring);
+ 				IRDMA_RING_MOVE_TAIL(cq->cq_ring);
+-				set_64bit_val(cq->shadow_area, 0,
+-					      IRDMA_RING_CURRENT_HEAD(cq->cq_ring));
++				/* Avoid translation issue by never setting shadow to even value unless the CQ is empty. */
++				if (IRDMA_RING_CURRENT_HEAD(cq->cq_ring) & 1 ||
++				    (cq->enable_cq_empty_check && irdma_uk_cq_empty(cq))) {
++					set_64bit_val(cq->shadow_area, 0,
++						      IRDMA_RING_CURRENT_HEAD(cq->cq_ring));
++				}
+ 				memset(info, 0, sizeof(*info));
+ 				return irdma_uk_cq_poll_cmpl(cq, info);
+ 			}
+@@ -1703,7 +1707,9 @@ exit:
+ 		IRDMA_RING_MOVE_TAIL(cq->cq_ring);
+ 		if (!cq->avoid_mem_cflct && ext_valid)
+ 			IRDMA_RING_MOVE_TAIL(cq->cq_ring);
+-		if (IRDMA_RING_CURRENT_HEAD(cq->cq_ring) & 0x3F || irdma_uk_cq_empty(cq))
++		/* Avoid translation issue by never setting shadow to even value unless the CQ is empty. */
++		if (IRDMA_RING_CURRENT_HEAD(cq->cq_ring) & 1 ||
++		    (cq->enable_cq_empty_check && irdma_uk_cq_empty(cq)))
+ 			set_64bit_val(cq->shadow_area, 0,
+ 				      IRDMA_RING_CURRENT_HEAD(cq->cq_ring));
+ 	} else {
+@@ -2233,9 +2239,13 @@ int irdma_uk_cq_init(struct irdma_cq_uk *cq, struct irdma_cq_uk_init_info *info)
+ 	cq->cq_ack_db = info->cq_ack_db;
+ 	cq->shadow_area = info->shadow_area;
+ 	cq->avoid_mem_cflct = info->avoid_mem_cflct;
++	cq->enable_cq_empty_check = info->enable_cq_empty_check;
+ 	IRDMA_RING_INIT(cq->cq_ring, cq->cq_size);
+ 	cq->polarity = 1;
+ 
++	__u32 initial_shadow = cq->cq_size - 1;
++	set_64bit_val(cq->shadow_area, 0, initial_shadow);
++
+ 	return 0;
+ }
+ 
+diff --git a/providers/irdma/user.h b/providers/irdma/user.h
+index f735d46e..333419e0 100644
+--- a/providers/irdma/user.h
++++ b/providers/irdma/user.h
+@@ -646,6 +646,7 @@ struct irdma_cq_uk {
+ 	struct irdma_ring cq_ring;
+ 	__u8 polarity;
+ 	bool avoid_mem_cflct:1;
++	bool enable_cq_empty_check:1;
+ };
+ 
+ struct irdma_qp_uk_init_info {
+@@ -685,6 +686,7 @@ struct irdma_cq_uk_init_info {
+ 	__u32 cq_size;
+ 	__u32 cq_id;
+ 	bool avoid_mem_cflct;
++	bool enable_cq_empty_check;
+ };
+ 
+ void irdma_print_cqes(struct irdma_cq_uk *cq);
+diff --git a/providers/irdma/uverbs.c b/providers/irdma/uverbs.c
+index db50d9df..4384febd 100644
+--- a/providers/irdma/uverbs.c
++++ b/providers/irdma/uverbs.c
+@@ -947,7 +947,9 @@ static struct ibv_cq_ex *ucreate_cq(struct ibv_context *context,
+ 	info.cq_id = resp.cq_id;
+ 	/* Do not report the CQE's reserved for immediate and burned by HW */
+ 	iwucq->verbs_cq.cq.cqe = ncqe;
+-
++	if (cqe_64byte_ena)
++		info.avoid_mem_cflct = true;
++	info.enable_cq_empty_check = (attr_ex->channel != NULL);
+ 	info.cqe_alloc_db = (__u32 *)((__u8 *)iwvctx->db + IRDMA_DB_CQ_OFFSET);
+ 	irdma_uk_cq_init(&iwucq->cq, &info);
+ 	pthread_mutex_lock(&sigusr1_wait_mutex);
+-- 
+2.56.0.212.g129ede20d9-goog
+
