@@ -1010,6 +1010,13 @@ enum irdma_cqp_op_type {
 #define IRDMA_SKIP_ARP_BIT BIT_ULL(3)
 #define IRDMA_SKIP_FLOW_LABEL_BIT BIT_ULL(4)
 #define IRDMA_TEL_EVENTS_EN BIT_ULL(5)
+/* Set on all GEN3. */
+#define IRDMA_UD_GRH_FIXUP_BIT BIT_ULL(6)
+/* Control plane supports device notifications. */
+#define IRDMA_DEV_NOTIFY_SUPP BIT_ULL(7)
+
+/* Driver capabilities passed to control plane during version query. */
+#define IRDMA_DRIVER_CAP_DEV_NOTIFY BIT_ULL(0)
 
 #define IRDMA_CQPSQ_MPP_QS_HANDLE_S 0
 #define IRDMA_CQPSQ_MPP_QS_HANDLE GENMASK_ULL(12, 0)

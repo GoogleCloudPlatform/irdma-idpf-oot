@@ -498,6 +498,33 @@ struct iidc_auxiliary_drv ig3rdma_auxiliary_drv = {
 	.vc_receive = irdma_vchnl_receive,
 };
 
+/**
+ * irdma_dev_notify - Notify the control plane of a device lifecycle event
+ * @iwdev: irdma device
+ * @event: device lifecycle event
+ *
+ * Only sent if the control plane advertised IRDMA_DEV_NOTIFY_SUPP. Best effort.
+ */
+static void irdma_dev_notify(struct irdma_device *iwdev,
+			     enum irdma_vchnl_dev_event event)
+{
+	struct irdma_sc_dev *dev = &iwdev->rf->sc_dev;
+	int ret;
+
+	if (!FIELD_GET(IRDMA_DEV_NOTIFY_SUPP, dev->vc_caps.feature_cap))
+		return;
+
+	ret = irdma_vchnl_req_dev_notify(dev, event);
+
+	/* Teardown events may be emitted after the device has already gone into
+	 * reset and may not be sent, but that's okay.
+	 */
+	if (ret && event == IRDMA_VCHNL_DEV_EVENT_INIT_DONE)
+		ibdev_warn(&iwdev->ibdev,
+			   "INIT_DONE event notification failed, ret = %d\n",
+			   ret);
+}
+
 static int ig3rdma_vport_probe(struct auxiliary_device *aux_dev, const struct auxiliary_device_id *id)
 {
 	struct iidc_rdma_vport_auxiliary_dev *idc_adev =
@@ -568,6 +595,9 @@ static int ig3rdma_vport_probe(struct auxiliary_device *aux_dev, const struct au
 
 	auxiliary_set_drvdata(aux_dev, iwdev);
 	printk(KERN_ERR "IRDMA register notifier post\n");
+
+	irdma_dev_notify(iwdev, IRDMA_VCHNL_DEV_EVENT_INIT_DONE);
+
 	return 0;
 
 err_all:
@@ -608,7 +638,9 @@ static void ig3rdma_vport_remove(struct auxiliary_device *aux_dev)
 		  netdev_name(idc_adev->vdev_info->netdev));
 
 	auxiliary_set_drvdata(aux_dev, NULL);
+	irdma_dev_notify(iwdev, IRDMA_VCHNL_DEV_EVENT_UNREGISTERING);
 	irdma_ib_unregister_device(iwdev);
+	irdma_dev_notify(iwdev, IRDMA_VCHNL_DEV_EVENT_UNREGISTERED);
 	mutex_lock(&iwdev->rf->iwdev_lock);
 	if (iwdev->rf->iwdev == iwdev)
 		iwdev->rf->iwdev = NULL;
