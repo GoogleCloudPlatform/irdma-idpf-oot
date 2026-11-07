@@ -84,7 +84,6 @@ struct irdma_ah {
 	u64 refcnt;
 	struct irdma_ah *parent_ah;	/* AH from cached list */
 	struct list_head node;
-	u64 deletion_timestamp;
 };
 
 struct irdma_hmc_pble {
