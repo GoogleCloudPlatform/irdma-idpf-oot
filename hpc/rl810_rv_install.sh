@@ -54,6 +54,9 @@ set -e
 
 LIBFABRIC_VERSION=v2.5.0
 IEFS_KERNEL_UPDATES_VERSION=c9be17c
+IEFS_CHERRY_PICK_COMMITS=(
+	"8c31582ade608d2927d7faddb35d557fe25fa6f7"
+)
 
 BUILD_LIBFABRIC=true
 for arg in "$@"; do
@@ -79,6 +82,9 @@ echo "Building and installing iefs-kernel-updates..."
 git clone https://github.com/intel/iefs-kernel-updates.git
 pushd iefs-kernel-updates/
 git checkout "${IEFS_KERNEL_UPDATES_VERSION}"
+for commit in "${IEFS_CHERRY_PICK_COMMITS[@]}"; do
+	git -c user.name="rv-build" -c user.email="rv-build@localhost" cherry-pick "${commit}"
+done
 ./do-update-makerpm.sh -S "${PWD}" -w "${PWD}/tmp"
 rpmbuild --rebuild --define "_topdir $(pwd)" --nodeps tmp/rpmbuild/SRPMS/*.src.rpm
 KVER_MANGLED=$(uname -r | tr '-' '_')
@@ -112,6 +118,14 @@ if ${BUILD_LIBFABRIC}; then
 	popd
 fi
 
+if lsmod | grep -q "^rv "; then
+	echo "Unloading existing rv module..."
+	if ! sudo modprobe -r rv; then
+		echo "WARNING: Failed to unload existing 'rv' module because it is currently in use." >&2
+		echo "The updated rv package has been installed on disk, but the old module is still loaded in memory." >&2
+		echo "Please stop any processes using 'rv' and run 'sudo modprobe -r rv && sudo modprobe rv' (or reboot) to load the new module." >&2
+	fi
+fi
 sudo modprobe rv
 
 echo "Installation complete!"
