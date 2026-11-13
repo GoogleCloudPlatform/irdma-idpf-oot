@@ -791,35 +791,12 @@ free_res:
 
 #endif
 
-static void irdma_ah_purge_pd(struct irdma_device *iwdev, u32 pd_id)
-{
-	struct irdma_ah *ah, *tmp;
-
-	spin_lock(&iwdev->ah_tbl_lock);
-	list_for_each_entry_safe(ah, tmp, &iwdev->ah_deletion_list, node) {
-		if (ah->sc_ah.ah_info.pd_idx != pd_id)
-			continue;
-
-		irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah, IRDMA_OP_AH_DESTROY,
-				false, NULL, ah);
-		irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_ahs,
-				ah->sc_ah.ah_info.ah_idx);
-		hash_del(&ah->list);
-		iwdev->ah_list_cnt--;
-		iwdev->ah_deletion_list_cnt--;
-		list_del(&ah->node);
-		kfree(ah);
-	}
-	spin_unlock(&iwdev->ah_tbl_lock);
-}
-
 #ifdef DEALLOC_PD_VER_4
 int irdma_dealloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 {
 	struct irdma_pd *iwpd = to_iwpd(ibpd);
 	struct irdma_device *iwdev = to_iwdev(ibpd->device);
 
-	irdma_ah_purge_pd(iwdev, iwpd->sc_pd.pd_id);
 	irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_pds, iwpd->sc_pd.pd_id);
 	return 0;
 }
@@ -832,7 +809,6 @@ void irdma_dealloc_pd(struct ib_pd *ibpd, struct ib_udata *udata)
 	struct irdma_pd *iwpd = to_iwpd(ibpd);
 	struct irdma_device *iwdev = to_iwdev(ibpd->device);
 
-	irdma_ah_purge_pd(iwdev, iwpd->sc_pd.pd_id);
 	irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_pds, iwpd->sc_pd.pd_id);
 }
 
@@ -844,7 +820,6 @@ void irdma_dealloc_pd(struct ib_pd *ibpd)
 	struct irdma_pd *iwpd = to_iwpd(ibpd);
 	struct irdma_device *iwdev = to_iwdev(ibpd->device);
 
-	irdma_ah_purge_pd(iwdev, iwpd->sc_pd.pd_id);
 	irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_pds, iwpd->sc_pd.pd_id);
 }
 #endif
@@ -855,7 +830,6 @@ int irdma_dealloc_pd(struct ib_pd *ibpd)
 	struct irdma_pd *iwpd = to_iwpd(ibpd);
 	struct irdma_device *iwdev = to_iwdev(ibpd->device);
 
-	irdma_ah_purge_pd(iwdev, iwpd->sc_pd.pd_id);
 	irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_pds, iwpd->sc_pd.pd_id);
 	kfree(iwpd);
 	return 0;
@@ -2840,6 +2814,7 @@ int irdma_destroy_ah(struct ib_ah *ibah, u32 ah_flags)
 		if (iwdev->ah_deletion_list_cnt > iwdev->ah_deletion_list_cnt_peak) {
 			iwdev->ah_deletion_list_cnt_peak = iwdev->ah_deletion_list_cnt;
 		}
+		ah->parent_ah->deletion_timestamp = ktime_get_raw_ns();
 	}
 	spin_unlock(&iwdev->ah_tbl_lock);
 

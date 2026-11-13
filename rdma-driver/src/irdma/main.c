@@ -684,6 +684,45 @@ static void ah_purge(struct irdma_device *iwdev)
 	spin_unlock(&iwdev->ah_tbl_lock);
 }
 
+#define AH_AGE_THRESH_NANOS    5000000000  /* 5 seconds. */
+static void ah_age_out(struct irdma_device *iwdev)
+{
+	u64 now;
+	struct irdma_ah *ah;
+
+	spin_lock(&iwdev->ah_tbl_lock);
+
+	if (list_empty(&iwdev->ah_deletion_list)) {
+		spin_unlock(&iwdev->ah_tbl_lock);
+		return;
+	}
+
+	ah = list_first_entry(&iwdev->ah_deletion_list,
+			      struct irdma_ah,
+			      node);
+
+	/* Read time while holding lock, otherwise, contention
+	 * can result in negative times.
+	 */
+	now = ktime_get_raw_ns();
+
+	if ((now - ah->deletion_timestamp) > AH_AGE_THRESH_NANOS) {
+		irdma_ah_cqp_op(iwdev->rf, &ah->sc_ah, IRDMA_OP_AH_DESTROY,
+				false, NULL, ah);
+
+		irdma_free_rsrc(iwdev->rf, iwdev->rf->allocated_ahs,
+				ah->sc_ah.ah_info.ah_idx);
+
+		hash_del(&ah->list);
+		iwdev->ah_list_cnt--;
+		iwdev->ah_deletion_list_cnt--;
+		list_del(&ah->node);
+		kfree(ah);
+	}
+
+	spin_unlock(&iwdev->ah_tbl_lock);
+}
+
 #define LOW_FREQ_MICROS  1000
 #define HIGH_FREQ_MICROS 25
 
@@ -697,6 +736,8 @@ static int poll_thread(void *context)
 	rf->sc_dev.last_cqp_poll_ts = ktime_get_raw_ns();
 	do {
 		usleep_range(sleep_micros, sleep_micros);
+
+		ah_age_out(rf->iwdev);
 
 		if (rf->sc_dev.hw_wa & AEQ_POLL) {
 			irdma_process_aeq(rf);
