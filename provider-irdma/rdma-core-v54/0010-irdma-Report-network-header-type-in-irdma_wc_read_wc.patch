@@ -1,0 +1,32 @@
+From 5a5feb1c2452d66025a9f41e1d1f79ba8efe3db5 Mon Sep 17 00:00:00 2001
+From: Ted Shaowang <shaowang@google.com>
+Date: Fri, 6 Nov 2026 21:05:53 +0000
+Subject: [PATCH] irdma: Report network header type in irdma_wc_read_wc_flags
+
+Set IBV_WC_WITH_NETWORK_HDR_TYPE and IBV_WC_NETWORK_HDR_IPV6 in
+irdma_wc_read_wc_flags() for UD completions on extended CQs
+(ibv_cq_ex), matching the existing behavior in irdma_process_cqe().
+
+Signed-off-by: Ted Shaowang <shaowang@google.com>
+---
+ providers/irdma/uverbs.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/providers/irdma/uverbs.c b/providers/irdma/uverbs.c
+index f8663a461..5e07cf14c 100644
+--- a/providers/irdma/uverbs.c
++++ b/providers/irdma/uverbs.c
+@@ -1593,7 +1593,9 @@ static unsigned int irdma_wc_read_wc_flags(struct ibv_cq_ex *ibvcq_ex)
+ 		wc_flags |= IBV_WC_WITH_IMM;
+ 
+ 	if (ib_qp->qp_type == IBV_QPT_UD) {
+-		wc_flags |= IBV_WC_GRH;
++		wc_flags |= IBV_WC_GRH | IBV_WC_WITH_NETWORK_HDR_TYPE;
++		if (!cur_cqe->ipv4)
++			wc_flags |= IBV_WC_NETWORK_HDR_IPV6;
+ 	} else {
+ 		if (cur_cqe->stag_invalid_set) {
+ 			switch (cur_cqe->op_type) {
+-- 
+2.56.0.506.g506a7eabc5-goog
+
