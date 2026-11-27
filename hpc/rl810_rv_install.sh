@@ -86,7 +86,8 @@ for commit in "${IEFS_CHERRY_PICK_COMMITS[@]}"; do
 	git -c user.name="rv-build" -c user.email="rv-build@localhost" cherry-pick "${commit}"
 done
 ./do-update-makerpm.sh -S "${PWD}" -w "${PWD}/tmp"
-rpmbuild --rebuild --define "_topdir $(pwd)" --nodeps tmp/rpmbuild/SRPMS/*.src.rpm
+# Use a fixed buildroot path without %{VERSION} so brp-strip excludes /usr/lib/debug cleanly.
+rpmbuild --rebuild --define "_topdir $(pwd)" --define "buildroot $(pwd)/BUILDROOT/iefs-kernel-updates" --nodeps tmp/rpmbuild/SRPMS/*.src.rpm
 KVER_MANGLED=$(uname -r | tr '-' '_')
 sudo dnf install -y RPMS/x86_64/kmod-iefs-kernel-updates-${KVER_MANGLED}-*.x86_64.rpm
 sudo dnf install -y RPMS/x86_64/iefs-kernel-updates-devel-${KVER_MANGLED}-*.x86_64.rpm
